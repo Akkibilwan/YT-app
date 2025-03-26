@@ -1,9 +1,9 @@
 """
 app.py - A self-contained Streamlit application for YouTube Niche Search.
-It integrates:
-  • A Channel Folder Manager (supports adding channel URLs or usernames)
-  • Real YouTube search using the YouTube Data API (API key stored in st.secrets)
-  • Retention analysis and outlier scoring.
+This application supports:
+  • Adding channels via URL or username (the channel ID is automatically resolved)
+  • Fetching search results using the YouTube Data API (with API key stored in st.secrets)
+  • Basic video analysis (retention, transcript, etc.)
 """
 
 import os
@@ -152,21 +152,24 @@ def resolve_channel_id(username):
 # =============================================================================
 def extract_channel_id(input_str):
     """
-    If the input string is a YouTube channel URL, extract the channel ID.
-    If it is a /user/ URL or a plain username, try to resolve it.
-    Otherwise, return the stripped input.
+    Automatically extract or resolve a channel ID from a URL or username.
+    - If a URL contains '/channel/', the ID is extracted.
+    - If a URL contains '/user/' or is a plain username, it is resolved via the API.
     """
     input_str = input_str.strip()
     m = re.search(r"youtube\.com/channel/([a-zA-Z0-9_-]+)", input_str)
     if m:
+        st.write(f"Extracted channel ID '{m.group(1)}' from URL.")
         return m.group(1)
     m = re.search(r"youtube\.com/user/([a-zA-Z0-9_-]+)", input_str)
     if m:
         username = m.group(1)
         return resolve_channel_id(username)
-    # If the input already looks like a channel ID (usually starts with "UC"), return it.
+    # If input already looks like a channel ID (usually starts with "UC"), return it.
     if input_str.startswith("UC"):
+        st.write(f"Input '{input_str}' appears to be a valid channel ID.")
         return input_str
+    # Otherwise, treat it as a username.
     return resolve_channel_id(input_str)
 
 # =============================================================================
@@ -195,13 +198,13 @@ def show_channel_folder_manager():
 
     if action == "Create New Folder":
         folder_name = st.text_input("Folder Name")
-        channels_input = st.text_area("Enter at least one channel URL or username (one per line):", height=100)
+        channels_input = st.text_area("Enter channel URL or username (one per line):", height=100)
     elif action == "Add Channels to Existing Folder":
         if not folders:
             st.info("No folders available. Please create a folder first.")
             return
         folder_choice = st.selectbox("Select Folder", list(folders.keys()))
-        channels_input = st.text_area("Enter at least one channel URL or username (one per line):", height=100)
+        channels_input = st.text_area("Enter channel URL or username (one per line):", height=100)
     elif action == "Delete Folder":
         if not folders:
             st.info("No folders available to delete.")
@@ -305,7 +308,6 @@ def fetch_youtube_results(keyword, channel_ids, timeframe, content_filter):
     st.write("Using publishedAfter =", published_after_str)  # Debug log
 
     for channel_id in channel_ids:
-        # Validate channel_id format
         if not channel_id.startswith("UC"):
             st.error(f"Channel ID '{channel_id}' is invalid. Skipping this channel.")
             continue
@@ -528,7 +530,7 @@ def show_search_page():
                         except:
                             days_ago = 0
                         days_ago_text = "today" if days_ago == 0 else f"{days_ago} days ago"
-                        outlier_val = "N/A"  # Placeholder
+                        outlier_val = "N/A"
                         outlier_html = f"""
                         <span style="
                             background-color:#4285f4;
