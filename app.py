@@ -755,6 +755,12 @@ atexit.register(lambda: logger.info("Application shutting down"))
 
 
 
+def calculate_outlier_score(current_views, channel_average):
+    """Calculate outlier score as the ratio of current views to channel average"""
+    if channel_average <= 0:
+        return 0
+    return current_views / channel_average
+
 outlier_score = calculate_outlier_score(video_details['viewCount'], channel_average)
 
 if outlier_score >= 2.0:
