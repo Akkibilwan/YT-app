@@ -754,76 +754,24 @@ def show_search_page():
 atexit.register(lambda: logger.info("Application shutting down"))
 
 
+
 outlier_score = calculate_outlier_score(video_details['viewCount'], channel_average)
-fig = create_performance_chart(benchmark_stats, video_performance, 
-video_details['title'][:40] + "..." if len(video_details['title']) > 40 else video_details['title'])
-st.plotly_chart(fig, use_container_width=True)
-st.subheader("Outlier Analysis")
+
 if outlier_score >= 2.0:
-outlier_category = "Significant Positive Outlier"
-outlier_class = "outlier-high"
+    outlier_category = "Significant Positive Outlier"
+    outlier_class = "outlier-high"
 elif outlier_score >= 1.5:
-outlier_category = "Positive Outlier"
-outlier_class = "outlier-high"
+    outlier_category = "Positive Outlier"
+    outlier_class = "outlier-high"
 elif outlier_score >= 1.2:
-outlier_category = "Slight Positive Outlier"
-outlier_class = "outlier-normal"
+    outlier_category = "Slight Positive Outlier"
+    outlier_class = "outlier-normal"
 elif outlier_score >= 0.8:
-outlier_category = "Normal Performance"
-outlier_class = "outlier-normal"
+    outlier_category = "Normal Performance"
+    outlier_class = "outlier-normal"
 elif outlier_score >= 0.5:
-outlier_category = "Slight Negative Outlier"
-outlier_class = "outlier-low"
+    outlier_category = "Slight Negative Outlier"
+    outlier_class = "outlier-low"
 else:
-outlier_category = "Significant Negative Outlier"
-outlier_class = "outlier-low"
-col1, col2, col3 = st.columns(3)
-with col1:
-st.markdown(f"""
-<div class='metric-card'>
-<div>Current Views</div>
-<div style='font-size: 24px; font-weight: bold;'>{video_details['viewCount']:,}</div>
-</div>
-""", unsafe_allow_html=True)
-with col2:
-st.markdown(f"""
-<div class='metric-card'>
-<div>Channel Average</div>
-<div style='font-size: 24px; font-weight: bold;'>{int(channel_average):,}</div>
-</div>
-""", unsafe_allow_html=True)
-with col3:
-st.markdown(f"""
-<div class='metric-card'>
-<div>Outlier Score</div>
-<div style='font-size: 24px; font-weight: bold;' class='{outlier_class}'>{outlier_score:.2f}</div>
-<div>{outlier_category}</div>
-</div>
-""", unsafe_allow_html=True)
-st.markdown(f"""
-<div class='explanation'>
-<p><strong>What this means:</strong></p>
-<p>An outlier score of <strong>{outlier_score:.2f}</strong> means this video has <strong>{outlier_score:.2f}x</strong> the views compared to the channel's average at the same age.</p>
-<ul>
-<li>1.0 = Exactly average performance</li>
-<li>&gt;1.0 = Outperforming channel average</li>
-<li>&lt;1.0 = Underperforming channel average</li>
-</ul>
-</div>
-""", unsafe_allow_html=True)
-st.subheader("Detailed Performance Metrics")
-col1, col2 = st.columns(2)
-with col1:
-if benchmark_median > 0:
-vs_median_pct = ((video_details['viewCount'] / benchmark_median) - 1) * 100
-st.metric("Compared to Median", f"{vs_median_pct:+.1f}%")
-if channel_average > 0:
-vs_avg_pct = ((video_details['viewCount'] / channel_average) - 1) * 100
-st.metric("Compared to Channel Average", f"{vs_avg_pct:+.1f}%")
-with col2:
-if benchmark_upper > 0:
-vs_upper_pct = ((video_details['viewCount'] / benchmark_upper) - 1) * 100
-st.metric("Compared to Upper Band", f"{vs_upper_pct:+.1f}%")
-if benchmark_lower > 0:
-vs_lower_pct = ((video_details['viewCount'] / benchmark_lower) - 1) * 100
-st.metric("Compared to Lower Band", f"{vs_lower_pct:+.1f}%")
+    outlier_category = "Significant Negative Outlier"
+    outlier_class = "outlier-low"
