@@ -1,8 +1,8 @@
 """
 app.py - A self-contained Streamlit application for YouTube Niche Search.
-This application supports:
-  • Adding channels via URL or username (the channel ID is automatically resolved)
-  • Fetching search results using the YouTube Data API (with API key stored in st.secrets)
+It integrates:
+  • A Channel Folder Manager (supports adding channel URLs, handles, or usernames)
+  • Real YouTube search using the YouTube Data API (API key stored in st.secrets)
   • Basic video analysis (retention, transcript, etc.)
 """
 
@@ -30,14 +30,12 @@ import requests
 # Shared Helper Functions (Data Processing & Outlier Calculation)
 # =============================================================================
 def calculate_outlier_score(current_views, channel_average):
-    """Calculate outlier score as the ratio of current views to the channel's average."""
     try:
         return current_views / channel_average if channel_average != 0 else 0
     except Exception:
         return 0
 
 def get_outlier_category(outlier_score):
-    """Determine outlier category and CSS class based on the outlier score."""
     if outlier_score >= 2.0:
         return "Significant Positive Outlier", "outlier-high"
     elif outlier_score >= 1.5:
@@ -52,10 +50,6 @@ def get_outlier_category(outlier_score):
         return "Significant Negative Outlier", "outlier-low"
 
 def process_video_data(data):
-    """
-    Process raw video data and calculate performance metrics including outlier score.
-    Expected data columns: views, likes, comments, view_count, channel_average.
-    """
     df = pd.DataFrame(data)
     df["combined_performance"] = df["views"] + df["likes"] * 2 + df["comments"] * 3
     df["log_performance"] = np.log1p(df["combined_performance"])
@@ -112,7 +106,6 @@ def load_cached_result(key):
 # Channel Folder Persistence Functions
 # =============================================================================
 def load_channel_folders():
-    """Load folder data from JSON file."""
     if os.path.exists(CHANNEL_FOLDERS_FILE):
         with open(CHANNEL_FOLDERS_FILE, "r") as f:
             folders = json.load(f)
@@ -121,7 +114,6 @@ def load_channel_folders():
     return folders
 
 def save_channel_folders(folders):
-    """Save folder data to JSON file."""
     with open(CHANNEL_FOLDERS_FILE, "w") as f:
         json.dump(folders, f, indent=4)
 
@@ -129,10 +121,6 @@ def save_channel_folders(folders):
 # Utility: Resolve Channel ID from Username using YouTube Data API
 # =============================================================================
 def resolve_channel_id(username):
-    """
-    Resolve a YouTube username to its channel ID using the YouTube Data API.
-    Returns the channel ID if found; otherwise returns the original username.
-    """
     api_key = st.secrets["youtube"]["api_key"]
     url = "https://www.googleapis.com/youtube/v3/channels"
     params = {"part": "id", "forUsername": username, "key": api_key}
@@ -148,40 +136,56 @@ def resolve_channel_id(username):
     return username
 
 # =============================================================================
-# Utility: Extract Channel ID from URL or Input
+# Utility: Resolve Channel ID from a Custom Handle
+# =============================================================================
+def resolve_channel_handle(handle):
+    api_key = st.secrets["youtube"]["api_key"]
+    url = "https://www.googleapis.com/youtube/v3/search"
+    params = {
+        "part": "snippet",
+        "q": handle,
+        "type": "channel",
+        "maxResults": 1,
+        "key": api_key
+    }
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        data = response.json()
+        items = data.get("items", [])
+        if items:
+            channel_id = items[0]["id"]["channelId"]
+            st.write(f"Resolved handle '@{handle}' to channel ID '{channel_id}'.")
+            return channel_id
+    st.warning(f"Could not resolve handle '@{handle}'. Using input as channel ID.")
+    return handle
+
+# =============================================================================
+# Utility: Extract Channel ID from URL, Handle, or Input
 # =============================================================================
 def extract_channel_id(input_str):
-    """
-    Automatically extract or resolve a channel ID from a URL or username.
-    - If a URL contains '/channel/', the ID is extracted.
-    - If a URL contains '/user/' or is a plain username, it is resolved via the API.
-    """
     input_str = input_str.strip()
     m = re.search(r"youtube\.com/channel/([a-zA-Z0-9_-]+)", input_str)
     if m:
         st.write(f"Extracted channel ID '{m.group(1)}' from URL.")
         return m.group(1)
+    m = re.search(r"youtube\.com/@([a-zA-Z0-9_-]+)", input_str)
+    if m:
+        handle = m.group(1)
+        st.write(f"Extracted handle '@{handle}' from URL.")
+        return resolve_channel_handle(handle)
     m = re.search(r"youtube\.com/user/([a-zA-Z0-9_-]+)", input_str)
     if m:
         username = m.group(1)
         return resolve_channel_id(username)
-    # If input already looks like a channel ID (usually starts with "UC"), return it.
     if input_str.startswith("UC"):
         st.write(f"Input '{input_str}' appears to be a valid channel ID.")
         return input_str
-    # Otherwise, treat it as a username.
     return resolve_channel_id(input_str)
 
 # =============================================================================
 # Advanced Channel Folder Manager UI
 # =============================================================================
 def show_channel_folder_manager():
-    """
-    Manage channel folders using a single form with an Action dropdown:
-      - Create New Folder
-      - Add Channels to Existing Folder
-      - Delete Folder
-    """
     st.subheader("Manage Channel Folders")
     folders = load_channel_folders()
     if folders:
@@ -198,13 +202,13 @@ def show_channel_folder_manager():
 
     if action == "Create New Folder":
         folder_name = st.text_input("Folder Name")
-        channels_input = st.text_area("Enter channel URL or username (one per line):", height=100)
+        channels_input = st.text_area("Enter channel URL, handle, or username (one per line):", height=100)
     elif action == "Add Channels to Existing Folder":
         if not folders:
             st.info("No folders available. Please create a folder first.")
             return
         folder_choice = st.selectbox("Select Folder", list(folders.keys()))
-        channels_input = st.text_area("Enter channel URL or username (one per line):", height=100)
+        channels_input = st.text_area("Enter channel URL, handle, or username (one per line):", height=100)
     elif action == "Delete Folder":
         if not folders:
             st.info("No folders available to delete.")
@@ -276,10 +280,6 @@ def show_channel_folder_manager():
 # YouTube Search Using the YouTube Data API
 # =============================================================================
 def fetch_youtube_results(keyword, channel_ids, timeframe, content_filter):
-    """
-    Fetch search results from the YouTube Data API.
-    API key is read from st.secrets["youtube"]["api_key"].
-    """
     results = []
     api_key = st.secrets["youtube"]["api_key"]
     base_search_url = "https://www.googleapis.com/youtube/v3/search"
@@ -305,13 +305,13 @@ def fetch_youtube_results(keyword, channel_ids, timeframe, content_filter):
         published_after = None
 
     published_after_str = published_after.strftime("%Y-%m-%dT%H:%M:%SZ") if published_after else None
-    st.write("Using publishedAfter =", published_after_str)  # Debug log
+    st.write("Using publishedAfter =", published_after_str)
 
     for channel_id in channel_ids:
         if not channel_id.startswith("UC"):
             st.error(f"Channel ID '{channel_id}' is invalid. Skipping this channel.")
             continue
-        st.write("Searching for channel ID:", channel_id)  # Debug log
+        st.write("Searching for channel ID:", channel_id)
         params = {
             "part": "snippet",
             "channelId": channel_id,
@@ -334,7 +334,6 @@ def fetch_youtube_results(keyword, channel_ids, timeframe, content_filter):
     return results
 
 def search_youtube(keyword, channel_ids, timeframe, content_filter, ttl=600):
-    """Wrapper for fetching YouTube results."""
     return fetch_youtube_results(keyword, channel_ids, timeframe, content_filter)
 
 # =============================================================================
