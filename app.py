@@ -167,7 +167,6 @@ def extract_channel_id(input_str):
     # If the input already looks like a channel ID (usually starts with "UC"), return it.
     if input_str.startswith("UC"):
         return input_str
-    # Otherwise, treat it as a username and try to resolve.
     return resolve_channel_id(input_str)
 
 # =============================================================================
@@ -229,11 +228,16 @@ def show_channel_folder_manager():
             channel_list = []
             for line in lines:
                 resolved_id = extract_channel_id(line)
-                channel_list.append({"channel_name": line, "channel_id": resolved_id})
-                st.write(f"Added channel '{line}' with resolved ID '{resolved_id}'.")
-            folders[name] = channel_list
-            save_channel_folders(folders)
-            st.success(f"Folder '{name}' created with {len(channel_list)} channel(s).")
+                # Validate that the resolved channel ID starts with "UC"
+                if not resolved_id.startswith("UC"):
+                    st.error(f"Resolved channel ID '{resolved_id}' for input '{line}' does not appear valid.")
+                else:
+                    channel_list.append({"channel_name": line, "channel_id": resolved_id})
+                    st.write(f"Added channel '{line}' with resolved ID '{resolved_id}'.")
+            if channel_list:
+                folders[name] = channel_list
+                save_channel_folders(folders)
+                st.success(f"Folder '{name}' created with {len(channel_list)} channel(s).")
         elif action == "Add Channels to Existing Folder":
             if not folder_choice:
                 st.error("No folder selected.")
@@ -245,11 +249,15 @@ def show_channel_folder_manager():
             count = 0
             for line in lines:
                 resolved_id = extract_channel_id(line)
-                folders[folder_choice].append({"channel_name": line, "channel_id": resolved_id})
-                st.write(f"Added channel '{line}' with resolved ID '{resolved_id}' to folder '{folder_choice}'.")
-                count += 1
-            save_channel_folders(folders)
-            st.success(f"Added {count} channel(s) to folder '{folder_choice}'.")
+                if not resolved_id.startswith("UC"):
+                    st.error(f"Resolved channel ID '{resolved_id}' for input '{line}' does not appear valid.")
+                else:
+                    folders[folder_choice].append({"channel_name": line, "channel_id": resolved_id})
+                    st.write(f"Added channel '{line}' with resolved ID '{resolved_id}' to folder '{folder_choice}'.")
+                    count += 1
+            if count > 0:
+                save_channel_folders(folders)
+                st.success(f"Added {count} channel(s) to folder '{folder_choice}'.")
         elif action == "Delete Folder":
             if not folder_choice:
                 st.error("No folder selected.")
@@ -293,12 +301,14 @@ def fetch_youtube_results(keyword, channel_ids, timeframe, content_filter):
     else:
         published_after = None
 
-    # Format publishedAfter without fractional seconds.
     published_after_str = published_after.strftime("%Y-%m-%dT%H:%M:%SZ") if published_after else None
-
     st.write("Using publishedAfter =", published_after_str)  # Debug info
 
     for channel_id in channel_ids:
+        # Validate channel_id format
+        if not channel_id.startswith("UC"):
+            st.error(f"Channel ID '{channel_id}' is invalid. Skipping this channel.")
+            continue
         st.write("Searching for channel ID:", channel_id)  # Debug info
         params = {
             "part": "snippet",
