@@ -1,3 +1,9 @@
+"""
+app.py - A self-contained Streamlit application for YouTube Niche Search
+with integrated Channel Folder Manager, search, retention analysis, and
+outlier scoring.
+"""
+
 import os
 import time
 import json
@@ -16,11 +22,51 @@ from logging.handlers import RotatingFileHandler
 import atexit
 from datetime import datetime, timedelta, timezone
 
-# Import shared functions from shared.py
-from shared import process_video_data, calculate_outlier_score, get_outlier_category
+# =============================================================================
+# Shared Helper Functions (Outlier and Data Processing)
+# =============================================================================
+def calculate_outlier_score(current_views, channel_average):
+    """
+    Calculate outlier score as the ratio of current views to the channel's average.
+    """
+    try:
+        return current_views / channel_average if channel_average != 0 else 0
+    except Exception:
+        return 0
+
+def get_outlier_category(outlier_score):
+    """
+    Determine outlier category and CSS class based on the outlier score.
+    """
+    if outlier_score >= 2.0:
+        return "Significant Positive Outlier", "outlier-high"
+    elif outlier_score >= 1.5:
+        return "Positive Outlier", "outlier-high"
+    elif outlier_score >= 1.2:
+        return "Slight Positive Outlier", "outlier-normal"
+    elif outlier_score >= 0.8:
+        return "Normal Performance", "outlier-normal"
+    elif outlier_score >= 0.5:
+        return "Slight Negative Outlier", "outlier-low"
+    else:
+        return "Significant Negative Outlier", "outlier-low"
+
+def process_video_data(data):
+    """
+    Process raw video data and calculate performance metrics including outlier score.
+    Expected data columns: views, likes, comments, view_count, channel_average.
+    """
+    df = pd.DataFrame(data)
+    # Calculate a combined performance metric.
+    df["combined_performance"] = df["views"] + df["likes"] * 2 + df["comments"] * 3
+    df["log_performance"] = np.log1p(df["combined_performance"])
+    # Updated outlier formula: ratio of view_count to channel_average.
+    df["outlier_score"] = df["view_count"] / df["channel_average"]
+    df["breakout_score"] = df["outlier_score"]
+    return df
 
 # =============================================================================
-# Setup Logging
+# Logging Setup
 # =============================================================================
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -34,7 +80,7 @@ DB_PATH = "youtube_data.db"
 CHANNEL_FOLDERS_FILE = "channel_folders.json"
 
 # =============================================================================
-# Database & Cache Functions
+# Database and Cache Functions
 # =============================================================================
 def init_db(db_path):
     conn = sqlite3.connect(db_path)
@@ -65,7 +111,7 @@ def load_cached_result(key):
     return json.loads(row[0]) if row else None
 
 # =============================================================================
-# Channel Folder Persistence
+# Channel Folder Persistence Functions
 # =============================================================================
 def load_channel_folders():
     """Load folder data from JSON file."""
@@ -102,7 +148,7 @@ def show_channel_folder_manager():
     else:
         st.write("No folders available yet.")
 
-    # Select the desired action.
+    # Select desired action.
     action = st.selectbox("Action", ["Create New Folder", "Add Channels to Existing Folder", "Delete Folder"])
 
     folder_name = ""
@@ -175,7 +221,8 @@ def show_channel_folder_manager():
 # =============================================================================
 def search_youtube(keyword, channel_ids, timeframe, content_filter, ttl=600):
     """
-    Dummy search function. Replace with actual YouTube API calls or database queries.
+    Dummy search function.
+    Replace with actual YouTube API calls or database queries.
     """
     dummy_data = [
         {
@@ -598,6 +645,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        logger.error(f"Unexpected error in main UI: {e}")
         st.error("An unexpected error occurred. Please check the logs for details.")
+        logger.error(f"Unexpected error in main UI: {e}")
     atexit.register(lambda: logger.info("Application shutting down"))
