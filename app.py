@@ -1,7 +1,7 @@
 """
 app.py - A self-contained Streamlit application for YouTube Niche Search.
 It integrates:
-  • A Channel Folder Manager (with support for adding channel URLs)
+  • A Channel Folder Manager (with support for adding channel URLs or usernames)
   • Real YouTube search using the YouTube Data API (API key stored in st.secrets)
   • Retention analysis and outlier scoring.
 """
@@ -126,11 +126,31 @@ def save_channel_folders(folders):
         json.dump(folders, f, indent=4)
 
 # =============================================================================
-# Utility: Extract Channel ID from URL or input
+# Utility: Resolve Channel ID from Username
+# =============================================================================
+def resolve_channel_id(username):
+    """
+    Resolve a YouTube username to its channel ID using the YouTube Data API.
+    Returns the channel ID if found; otherwise returns the original username.
+    """
+    api_key = st.secrets["youtube"]["api_key"]
+    url = "https://www.googleapis.com/youtube/v3/channels"
+    params = {"part": "id", "forUsername": username, "key": api_key}
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        data = response.json()
+        items = data.get("items", [])
+        if items:
+            return items[0]["id"]
+    return username
+
+# =============================================================================
+# Utility: Extract Channel ID from URL or Input
 # =============================================================================
 def extract_channel_id(input_str):
     """
     If the input string is a YouTube channel URL, extract the channel ID.
+    If it is a /user/ URL or a plain username, try to resolve it.
     Otherwise, return the stripped input.
     """
     input_str = input_str.strip()
@@ -139,8 +159,13 @@ def extract_channel_id(input_str):
         return m.group(1)
     m = re.search(r"youtube\.com/user/([a-zA-Z0-9_-]+)", input_str)
     if m:
-        return m.group(1)
-    return input_str
+        username = m.group(1)
+        return resolve_channel_id(username)
+    # If the input already looks like a channel ID (usually starts with "UC"), return it.
+    if input_str.startswith("UC"):
+        return input_str
+    # Otherwise, treat the input as a username.
+    return resolve_channel_id(input_str)
 
 # =============================================================================
 # Advanced Channel Folder Manager UI
@@ -257,7 +282,7 @@ def fetch_youtube_results(keyword, channel_ids, timeframe, content_filter):
     else:
         published_after = None
 
-    # Use strftime to avoid fractional seconds.
+    # Use strftime to get a valid RFC 3339 string without fractional seconds.
     published_after_str = published_after.strftime("%Y-%m-%dT%H:%M:%SZ") if published_after else None
 
     for channel_id in channel_ids:
