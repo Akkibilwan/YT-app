@@ -7,24 +7,17 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from io import BytesIO
 from scipy.signal import find_peaks
-import requests
 import sqlite3
-import hashlib
-import re
-from datetime import datetime, timedelta, timezone
-import openai
-import logging
-from logging.handlers import RotatingFileHandler
-from collections import defaultdict
-import atexit
 import subprocess
-import tempfile
-import shutil
 import pandas as pd
 import isodate
+import logging
+from logging.handlers import RotatingFileHandler
+import atexit
+from datetime import datetime, timedelta, timezone
 
 # Import shared functions from shared.py
-from shared import process_video_data
+from shared import process_video_data, calculate_outlier_score, get_outlier_category
 
 # =============================================================================
 # Setup Logging
@@ -41,7 +34,7 @@ DB_PATH = "youtube_data.db"
 CHANNEL_FOLDERS_FILE = "channel_folders.json"
 
 # =============================================================================
-# Database and Utility Functions
+# Database & Cache Functions
 # =============================================================================
 def init_db(db_path):
     conn = sqlite3.connect(db_path)
@@ -101,7 +94,7 @@ def show_channel_folder_manager():
     st.subheader("Manage Channel Folders")
     folders = load_channel_folders()
 
-    # Display existing folders summary.
+    # Display a summary of existing folders.
     if folders:
         st.write("**Existing Folders:**")
         for folder_name, channels in folders.items():
@@ -109,10 +102,9 @@ def show_channel_folder_manager():
     else:
         st.write("No folders available yet.")
 
-    # Action selectbox.
+    # Select the desired action.
     action = st.selectbox("Action", ["Create New Folder", "Add Channels to Existing Folder", "Delete Folder"])
 
-    # Prepare form fields.
     folder_name = ""
     folder_choice = ""
     channels_input = ""
@@ -120,14 +112,12 @@ def show_channel_folder_manager():
     if action == "Create New Folder":
         folder_name = st.text_input("Folder Name")
         channels_input = st.text_area("Enter at least one channel name or URL (one per line):", height=100)
-
     elif action == "Add Channels to Existing Folder":
         if not folders:
             st.info("No folders available. Please create a folder first.")
             return
         folder_choice = st.selectbox("Select Folder", list(folders.keys()))
         channels_input = st.text_area("Enter at least one channel name or URL (one per line):", height=100)
-
     elif action == "Delete Folder":
         if not folders:
             st.info("No folders available to delete.")
@@ -153,17 +143,10 @@ def show_channel_folder_manager():
             if not lines:
                 st.error("Please enter at least one channel.")
                 return
-            channel_list = []
-            for line in lines:
-                channel_entry = {
-                    "channel_name": line,
-                    "channel_id": line
-                }
-                channel_list.append(channel_entry)
+            channel_list = [{"channel_name": line, "channel_id": line} for line in lines]
             folders[name] = channel_list
             save_channel_folders(folders)
             st.success(f"Folder '{name}' created with {len(channel_list)} channel(s).")
-
         elif action == "Add Channels to Existing Folder":
             if not folder_choice:
                 st.error("No folder selected.")
@@ -173,14 +156,9 @@ def show_channel_folder_manager():
                 st.error("Please enter at least one channel.")
                 return
             for line in lines:
-                channel_entry = {
-                    "channel_name": line,
-                    "channel_id": line
-                }
-                folders[folder_choice].append(channel_entry)
+                folders[folder_choice].append({"channel_name": line, "channel_id": line})
             save_channel_folders(folders)
             st.success(f"Added {len(lines)} channel(s) to folder '{folder_choice}'.")
-
         elif action == "Delete Folder":
             if not folder_choice:
                 st.error("No folder selected.")
@@ -197,8 +175,7 @@ def show_channel_folder_manager():
 # =============================================================================
 def search_youtube(keyword, channel_ids, timeframe, content_filter, ttl=600):
     """
-    Dummy implementation for search.
-    Replace with actual YouTube API calls or DB queries.
+    Dummy search function. Replace with actual YouTube API calls or database queries.
     """
     dummy_data = [
         {
@@ -234,25 +211,22 @@ def summarize_script(script_text):
 
 def get_transcript_with_fallback(video_id):
     transcript = [{"start": 0, "text": "Welcome to the video."}]
-    source = "dummy"
-    return transcript, source
+    return transcript, "dummy"
 
 def get_intro_outro_transcript(video_id, total_duration):
-    intro_txt = "This is the intro of the video."
-    outro_txt = "This is the outro of the video."
-    return intro_txt, outro_txt
+    return "This is the intro of the video.", "This is the outro of the video."
 
 def summarize_intro_outro(intro, outro):
     return "Intro summary.", "Outro summary."
 
 # =============================================================================
-# Retention Analysis Functions
+# Retention Analysis & Video Frame Functions
 # =============================================================================
 def capture_player_screenshot_with_hover(video_url, timestamp, output_path, use_cookies):
     time.sleep(2)
     dummy_image = np.zeros((480, 640, 3), dtype=np.uint8)
     cv2.imwrite(output_path, dummy_image)
-    return 10
+    return 10  # Dummy duration
 
 def detect_retention_peaks(screenshot_path, crop_ratio, height_threshold, distance, top_n):
     roi_width = 640
@@ -284,8 +258,7 @@ def capture_frame_at_time(video_url, target_time, output_path, use_cookies):
 def filter_transcript(transcript, target_time, window=5):
     snippet = []
     for seg in transcript:
-        start = seg.get("start", 0)
-        if abs(start - target_time) <= window:
+        if abs(seg.get("start", 0) - target_time) <= window:
             snippet.append(seg.get("text", ""))
     return " ".join(snippet)
 
@@ -297,7 +270,7 @@ def check_ytdlp_installed():
         return False
 
 def download_video_snippet(video_url, start_time, duration=10, output_path="snippet.mp4"):
-    os.makedirs(os.path.dirname(os.path.abspath(output_path)) if os.path.dirname(output_path) else '.', exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
     try:
         temp_video = "temp_full_video.mp4"
         download_cmd = [
@@ -337,7 +310,8 @@ def download_video_snippet(video_url, start_time, duration=10, output_path="snip
 # =============================================================================
 def show_search_page():
     st.title("Youtube Niche Search")
-    # Sidebar: Channel Folder Manager
+    
+    # Sidebar: Advanced Channel Folder Manager
     with st.sidebar.expander("Channel Folder Manager"):
         show_channel_folder_manager()
 
@@ -408,7 +382,6 @@ def show_search_page():
         sorted_data = sorted(data, key=parse_sort_value, reverse=True)
         st.subheader(f"Found {len(sorted_data)} results (sorted by {sort_by})")
 
-        # Display results in 3 columns per row.
         for i in range(0, len(sorted_data), 3):
             row_chunk = sorted_data[i:i+3]
             cols = st.columns(3)
@@ -520,7 +493,7 @@ def show_details_page():
         st.write("No comments available for this video.")
 
     st.subheader("Script")
-    transcript, source = get_transcript_with_fallback(video_id)
+    transcript, _ = get_transcript_with_fallback(video_id)
     is_short = ("shorts" in video_url.lower()) or (total_duration < 60)
     if is_short:
         if transcript:
@@ -569,9 +542,7 @@ def show_details_page():
                                 st.error("Retention screenshot not found.")
                                 return
                             with st.spinner("Analyzing retention peaks..."):
-                                peaks, roi, binary_roi, roi_width, col_sums = detect_retention_peaks(
-                                    screenshot_path, crop_ratio=0.2, height_threshold=200, distance=20, top_n=5
-                                )
+                                peaks, _, _, roi_width, col_sums = detect_retention_peaks(screenshot_path, crop_ratio=0.2, height_threshold=200, distance=20, top_n=5)
                             st.write(f"Detected {len(peaks)} retention peak(s): {peaks}")
                             buf = plot_brightness_profile(col_sums, peaks)
                             st.image(buf, caption="Brightness Profile with Detected Peaks")
@@ -606,7 +577,7 @@ def show_details_page():
                         except Exception as e:
                             st.error(f"Error during retention analysis: {e}")
             except Exception as e:
-                logger.error(f"Error parsing published_at: {e}")
+                st.error(f"Error parsing published_at: {e}")
         else:
             st.info("No published date available; cannot determine retention analysis eligibility.")
     if st.button("Back to Search", key="details_back_button"):
