@@ -1,0 +1,10 @@
+streamlit
+opencv-python
+numpy
+matplotlib
+scipy
+requests
+pandas
+isodate
+openai
+imageio-ffmpeg
