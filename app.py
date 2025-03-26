@@ -23,7 +23,9 @@ import shutil
 import pandas as pd
 import isodate
 
-# Setup logging
+# =============================================================================
+# Setup Logging
+# =============================================================================
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 handler = RotatingFileHandler("app.log", maxBytes=1000000, backupCount=3)
@@ -33,6 +35,7 @@ logger.addHandler(handler)
 # Database and Utility Functions
 # =============================================================================
 DB_PATH = "youtube_data.db"
+CHANNEL_FOLDERS_FILE = "channel_folders.json"
 
 def init_db(db_path):
     conn = sqlite3.connect(db_path)
@@ -61,6 +64,19 @@ def load_cached_result(key):
     row = c.fetchone()
     conn.close()
     return json.loads(row[0]) if row else None
+
+# Functions for persisting channel folders
+def load_channel_folders():
+    if os.path.exists(CHANNEL_FOLDERS_FILE):
+        with open(CHANNEL_FOLDERS_FILE, "r") as f:
+            folders = json.load(f)
+    else:
+        folders = {}
+    return folders
+
+def save_channel_folders(folders):
+    with open(CHANNEL_FOLDERS_FILE, "w") as f:
+        json.dump(folders, f, indent=4)
 
 # =============================================================================
 # Data Processing Functions
@@ -137,20 +153,51 @@ def summarize_intro_outro(intro, outro):
     # Dummy summary for intro and outro
     return "Intro summary.", "Outro summary."
 
+# =============================================================================
+# Channel Folder Manager UI
+# =============================================================================
 def show_channel_folder_manager():
-    st.write("Channel Folder Manager UI goes here.")
-
-def load_channel_folders():
-    # Dummy folder data
-    return {
-        "Folder A": [
-            {"channel_id": "ch1", "channel_name": "Channel One"},
-            {"channel_id": "ch2", "channel_name": "Channel Two"}
-        ],
-        "Folder B": [
-            {"channel_id": "ch3", "channel_name": "Channel Three"}
-        ]
-    }
+    st.subheader("Channel Folder Manager")
+    folders = load_channel_folders()
+    
+    # Display existing folders
+    if folders:
+        st.write("**Existing Folders:**")
+        for folder, channels in folders.items():
+            st.write(f"- {folder} ({len(channels)} channels)")
+    else:
+        st.write("No folders available.")
+    
+    # Form to create a new folder
+    with st.form(key="create_folder_form"):
+        new_folder_name = st.text_input("New Folder Name")
+        submit_new_folder = st.form_submit_button("Create Folder")
+        if submit_new_folder:
+            if new_folder_name:
+                if new_folder_name in folders:
+                    st.error("Folder already exists.")
+                else:
+                    folders[new_folder_name] = []
+                    save_channel_folders(folders)
+                    st.success(f"Folder '{new_folder_name}' created.")
+            else:
+                st.error("Folder name cannot be empty.")
+    
+    # Form to add a channel to an existing folder
+    if folders:
+        with st.form(key="add_channel_form"):
+            folder_choice = st.selectbox("Select Folder", list(folders.keys()))
+            channel_name = st.text_input("Channel Name")
+            channel_id = st.text_input("Channel ID")
+            submit_add_channel = st.form_submit_button("Add Channel")
+            if submit_add_channel:
+                if folder_choice and channel_name and channel_id:
+                    new_channel = {"channel_name": channel_name, "channel_id": channel_id}
+                    folders[folder_choice].append(new_channel)
+                    save_channel_folders(folders)
+                    st.success(f"Channel '{channel_name}' added to folder '{folder_choice}'.")
+                else:
+                    st.error("Please fill all fields to add a channel.")
 
 # =============================================================================
 # Retention Analysis Functions
@@ -266,14 +313,14 @@ def show_search_page():
     
     selected_channel_ids = []
     if folder_choice != "None":
-        for ch in folders[folder_choice]:
+        for ch in folders.get(folder_choice, []):
             selected_channel_ids.append(ch["channel_id"])
 
     st.write(f"**Selected Folder**: {folder_choice}")
     if folder_choice != "None":
         with st.expander("Channels in this folder", expanded=False):
-            if folders[folder_choice]:
-                for ch in folders[folder_choice]:
+            if folders.get(folder_choice):
+                for ch in folders.get(folder_choice):
                     st.write(f"- {ch['channel_name']}")
             else:
                 st.write("(No channels)")
@@ -385,14 +432,14 @@ def show_search_page():
                         st.markdown(container_html, unsafe_allow_html=True)
                         if st.checkbox("View more analytics", key=f"toggle_{row['video_id']}"):
                             st.write(f"**Channel**: {row['channel_name']}")
-                            st.write(f"**Category**: {row['content_category']}")
+                            st.write(f"**Category**: {row.get('content_category', 'N/A')}")
                             st.write(f"**Comments**: {row['comment_count']}")
                             st.markdown(f"**C/V Ratio**: {row['comment_to_view_ratio']} (Outlier: {row['outlier_cvr']:.2f})")
                             st.markdown(f"**C/L Ratio**: {row['comment_to_like_ratio']} (Outlier: {row['outlier_clr']:.2f})")
                             if st.button("View Details", key=f"view_{row['video_id']}"):
                                 st.session_state.selected_video_id = row["video_id"]
                                 st.session_state.selected_video_title = row["title"]
-                                st.session_state.selected_video_duration = row["duration_seconds"]
+                                st.session_state.selected_video_duration = row.get("duration_seconds", 0)
                                 st.session_state.selected_video_publish_at = row["published_at"]
                                 st.session_state.page = "details"
                                 st.stop()
