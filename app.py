@@ -3,6 +3,7 @@ app.py - A self-contained Streamlit application for YouTube Niche Search.
 It integrates:
   • A Channel Folder Manager (supports adding channel URLs, handles, or usernames)
   • Real YouTube search using the YouTube Data API (API key stored in st.secrets)
+  • Outlier calculation using video statistics (dummy channel average is used)
   • Basic video analysis (retention, transcript, etc.)
 """
 
@@ -29,13 +30,15 @@ import requests
 # =============================================================================
 # Shared Helper Functions (Data Processing & Outlier Calculation)
 # =============================================================================
-def calculate_outlier_score(current_views, channel_average):
+def calculate_outlier_score(view_count, channel_average):
+    """Calculate outlier score as viewCount divided by channel average."""
     try:
-        return current_views / channel_average if channel_average != 0 else 0
+        return int(view_count) / channel_average if channel_average != 0 else 0
     except Exception:
         return 0
 
 def get_outlier_category(outlier_score):
+    """Return a textual category and CSS class for the outlier score."""
     if outlier_score >= 2.0:
         return "Significant Positive Outlier", "outlier-high"
     elif outlier_score >= 1.5:
@@ -277,6 +280,29 @@ def show_channel_folder_manager():
                 st.error("Folder not found. Please refresh and try again.")
 
 # =============================================================================
+# Fetch Video Statistics from YouTube Data API
+# =============================================================================
+def fetch_video_statistics(video_ids):
+    api_key = st.secrets["youtube"]["api_key"]
+    url = "https://www.googleapis.com/youtube/v3/videos"
+    params = {
+        "part": "statistics",
+        "id": ",".join(video_ids),
+        "key": api_key
+    }
+    response = requests.get(url, params=params)
+    stats = {}
+    if response.status_code == 200:
+        data = response.json()
+        for item in data.get("items", []):
+            vid = item["id"]
+            statistics = item.get("statistics", {})
+            stats[vid] = statistics
+    else:
+        st.error(f"Error fetching video statistics: {response.text}")
+    return stats
+
+# =============================================================================
 # YouTube Search Using the YouTube Data API
 # =============================================================================
 def fetch_youtube_results(keyword, channel_ids, timeframe, content_filter):
@@ -481,8 +507,20 @@ def show_search_page():
             st.error("No folder or channels selected. Please select a folder with at least one channel.")
         else:
             results = search_youtube(search_query, selected_channel_ids, selected_timeframe, content_filter, ttl=600)
-            if min_outlier_score > 0:
-                results = [r for r in results if float(r.get("statistics", {}).get("viewCount", 0)) >= min_outlier_score]
+            # Fetch video statistics to compute outlier score.
+            video_ids = [item["id"]["videoId"] for item in results if item.get("id", {}).get("videoId")]
+            stats = fetch_video_statistics(video_ids)
+            # For demonstration, assume channel average is 10000 views.
+            CHANNEL_AVG = 10000
+            # We'll attach outlier score to each result.
+            for item in results:
+                vid = item.get("id", {}).get("videoId", "")
+                if vid in stats and "viewCount" in stats[vid]:
+                    view_count = stats[vid]["viewCount"]
+                    outlier = calculate_outlier_score(view_count, CHANNEL_AVG)
+                    item["computed_outlier"] = outlier
+                else:
+                    item["computed_outlier"] = None
             st.session_state.search_results = results
             st.session_state.page = "search"
 
@@ -491,9 +529,7 @@ def show_search_page():
         sort_options = [
             "views",
             "upload_date",
-            "outlier_score",
-            "outlier_cvr",
-            "outlier_clr",
+            "computed_outlier",
             "comment_to_view_ratio",
             "comment_to_like_ratio",
             "comment_count"
@@ -508,7 +544,7 @@ def show_search_page():
                     return datetime.min
             val = item.get(sort_by, 0)
             try:
-                return float(val)
+                return float(val) if val is not None else 0.0
             except:
                 return 0.0
 
@@ -530,6 +566,8 @@ def show_search_page():
                             days_ago = 0
                         days_ago_text = "today" if days_ago == 0 else f"{days_ago} days ago"
                         outlier_val = "N/A"
+                        if row.get("computed_outlier") is not None:
+                            outlier_val = f"{row['computed_outlier']:.2f}x"
                         outlier_html = f"""
                         <span style="
                             background-color:#4285f4;
@@ -588,24 +626,20 @@ def show_details_page():
     video_id = st.session_state.get("selected_video_id")
     video_title = st.session_state.get("selected_video_title")
     published_at = st.session_state.get("selected_video_publish_at")
-
     if not video_id or not video_title:
         st.write("No video selected. Please go back to Search.")
         if st.button("Back to Search", key="details_back"):
             st.session_state.page = "search"
             st.stop()
         return
-
     st.title(f"Details for: {video_title}")
     video_url = f"https://www.youtube.com/watch?v={video_id}"
-
     st.subheader("Comments")
     comments = []  # Replace with actual comment fetching if needed.
     if comments:
         st.write(f"Total Comments Fetched: {len(comments)}")
     else:
         st.write("No comments available for this video.")
-
     st.subheader("Script")
     transcript, _ = get_transcript_with_fallback(video_id)
     if transcript:
@@ -618,13 +652,27 @@ def show_details_page():
         st.write(summary)
     else:
         st.info("Transcript unavailable.")
-
     st.subheader("Retention Analysis")
     st.info("Retention analysis functionality not fully implemented in this demo.")
-
     if st.button("Back to Search", key="details_back_button"):
         st.session_state.page = "search"
         st.stop()
+
+def fetch_video_statistics(video_ids):
+    api_key = st.secrets["youtube"]["api_key"]
+    url = "https://www.googleapis.com/youtube/v3/videos"
+    params = {"part": "statistics", "id": ",".join(video_ids), "key": api_key}
+    response = requests.get(url, params=params)
+    stats = {}
+    if response.status_code == 200:
+        data = response.json()
+        for item in data.get("items", []):
+            vid = item["id"]
+            statistics = item.get("statistics", {})
+            stats[vid] = statistics
+    else:
+        st.error(f"Error fetching video statistics: {response.text}")
+    return stats
 
 def main():
     init_db(DB_PATH)
