@@ -3,7 +3,9 @@ app.py - A self-contained Streamlit application for YouTube Niche Search.
 It integrates:
   • A Channel Folder Manager (supports adding channel URLs, handles, or usernames)
   • Real YouTube search using the YouTube Data API (API key stored in st.secrets)
-  • Outlier calculation using video statistics (dummy channel average is used)
+  • Outlier calculation using the formula from your original app.py:
+       outlier_score = viewCount / channel_average
+     with thresholds to label the video performance.
   • Basic video analysis (retention, transcript, etc.)
 """
 
@@ -31,14 +33,26 @@ import requests
 # Shared Helper Functions (Data Processing & Outlier Calculation)
 # =============================================================================
 def calculate_outlier_score(view_count, channel_average):
-    """Calculate outlier score as viewCount divided by channel average."""
+    """
+    Calculate outlier score as the ratio of current views to the channel's average.
+    (This is the formula from your original app.py.)
+    """
     try:
         return int(view_count) / channel_average if channel_average != 0 else 0
     except Exception:
         return 0
 
 def get_outlier_category(outlier_score):
-    """Return a textual category and CSS class for the outlier score."""
+    """
+    Categorize the outlier score based on thresholds.
+    These thresholds are as per your original formula:
+      - >=2.0: Significant Positive Outlier
+      - >=1.5: Positive Outlier
+      - >=1.2: Slight Positive Outlier
+      - >=0.8: Normal Performance
+      - >=0.5: Slight Negative Outlier
+      - Otherwise: Significant Negative Outlier
+    """
     if outlier_score >= 2.0:
         return "Significant Positive Outlier", "outlier-high"
     elif outlier_score >= 1.5:
@@ -73,6 +87,8 @@ logger.addHandler(handler)
 # =============================================================================
 DB_PATH = "youtube_data.db"
 CHANNEL_FOLDERS_FILE = "channel_folders.json"
+# For demonstration, we assume a constant channel average (e.g. 10,000 views)
+DEFAULT_CHANNEL_AVG = 10000
 
 # =============================================================================
 # Database and Cache Functions
@@ -285,11 +301,7 @@ def show_channel_folder_manager():
 def fetch_video_statistics(video_ids):
     api_key = st.secrets["youtube"]["api_key"]
     url = "https://www.googleapis.com/youtube/v3/videos"
-    params = {
-        "part": "statistics",
-        "id": ",".join(video_ids),
-        "key": api_key
-    }
+    params = {"part": "statistics", "id": ",".join(video_ids), "key": api_key}
     response = requests.get(url, params=params)
     stats = {}
     if response.status_code == 200:
@@ -507,20 +519,21 @@ def show_search_page():
             st.error("No folder or channels selected. Please select a folder with at least one channel.")
         else:
             results = search_youtube(search_query, selected_channel_ids, selected_timeframe, content_filter, ttl=600)
-            # Fetch video statistics to compute outlier score.
+            # Fetch video statistics and compute outlier score using the original formula:
+            # outlier_score = viewCount / channel_average (we use DEFAULT_CHANNEL_AVG if not available)
             video_ids = [item["id"]["videoId"] for item in results if item.get("id", {}).get("videoId")]
             stats = fetch_video_statistics(video_ids)
-            # For demonstration, assume channel average is 10000 views.
-            CHANNEL_AVG = 10000
-            # We'll attach outlier score to each result.
             for item in results:
                 vid = item.get("id", {}).get("videoId", "")
                 if vid in stats and "viewCount" in stats[vid]:
                     view_count = stats[vid]["viewCount"]
-                    outlier = calculate_outlier_score(view_count, CHANNEL_AVG)
+                    outlier = calculate_outlier_score(view_count, DEFAULT_CHANNEL_AVG)
                     item["computed_outlier"] = outlier
+                    category, css_class = get_outlier_category(outlier)
+                    item["outlier_category"] = category
                 else:
                     item["computed_outlier"] = None
+                    item["outlier_category"] = "N/A"
             st.session_state.search_results = results
             st.session_state.page = "search"
 
@@ -568,6 +581,7 @@ def show_search_page():
                         outlier_val = "N/A"
                         if row.get("computed_outlier") is not None:
                             outlier_val = f"{row['computed_outlier']:.2f}x"
+                        category = row.get("outlier_category", "N/A")
                         outlier_html = f"""
                         <span style="
                             background-color:#4285f4;
@@ -576,7 +590,7 @@ def show_search_page():
                             border-radius:12px;
                             font-size:0.95rem;
                             font-weight:bold;">
-                            {outlier_val}
+                            {outlier_val} ({category})
                         </span>
                         """
                         video_id = row.get("id", {}).get("videoId", "unknown")
@@ -657,22 +671,6 @@ def show_details_page():
     if st.button("Back to Search", key="details_back_button"):
         st.session_state.page = "search"
         st.stop()
-
-def fetch_video_statistics(video_ids):
-    api_key = st.secrets["youtube"]["api_key"]
-    url = "https://www.googleapis.com/youtube/v3/videos"
-    params = {"part": "statistics", "id": ",".join(video_ids), "key": api_key}
-    response = requests.get(url, params=params)
-    stats = {}
-    if response.status_code == 200:
-        data = response.json()
-        for item in data.get("items", []):
-            vid = item["id"]
-            statistics = item.get("statistics", {})
-            stats[vid] = statistics
-    else:
-        st.error(f"Error fetching video statistics: {response.text}")
-    return stats
 
 def main():
     init_db(DB_PATH)
