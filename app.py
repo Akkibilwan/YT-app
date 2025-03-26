@@ -134,15 +134,12 @@ def extract_channel_id(input_str):
     Otherwise, return the stripped input.
     """
     input_str = input_str.strip()
-    # Check for URL with "/channel/"
     m = re.search(r"youtube\.com/channel/([a-zA-Z0-9_-]+)", input_str)
     if m:
         return m.group(1)
-    # Check for URL with "/user/" (for simplicity, return the username; ideally, you should convert it)
     m = re.search(r"youtube\.com/user/([a-zA-Z0-9_-]+)", input_str)
     if m:
         return m.group(1)
-    # Otherwise, assume input_str is already a channel ID.
     return input_str
 
 # =============================================================================
@@ -157,7 +154,6 @@ def show_channel_folder_manager():
     """
     st.subheader("Manage Channel Folders")
     folders = load_channel_folders()
-
     if folders:
         st.write("**Existing Folders:**")
         for folder_name, channels in folders.items():
@@ -241,7 +237,7 @@ def fetch_youtube_results(keyword, channel_ids, timeframe, content_filter):
     api_key = st.secrets["youtube"]["api_key"]
     base_search_url = "https://www.googleapis.com/youtube/v3/search"
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if timeframe == "Last 24 hours":
         published_after = now - timedelta(days=1)
     elif timeframe == "Last 48 hours":
@@ -286,9 +282,7 @@ def fetch_youtube_results(keyword, channel_ids, timeframe, content_filter):
     return results
 
 def search_youtube(keyword, channel_ids, timeframe, content_filter, ttl=600):
-    """
-    Wrapper for fetching YouTube results.
-    """
+    """Wrapper for fetching YouTube results."""
     return fetch_youtube_results(keyword, channel_ids, timeframe, content_filter)
 
 # =============================================================================
@@ -437,6 +431,7 @@ def show_search_page():
         else:
             results = search_youtube(search_query, selected_channel_ids, selected_timeframe, content_filter, ttl=600)
             if min_outlier_score > 0:
+                # Here we simply compare viewCount as a float; adjust as needed.
                 results = [r for r in results if float(r.get("statistics", {}).get("viewCount", 0)) >= min_outlier_score]
             st.session_state.search_results = results
             st.session_state.page = "search"
@@ -480,12 +475,11 @@ def show_search_page():
                         published = row["snippet"].get("publishedAt", "")
                         try:
                             pub_date = datetime.strptime(published, "%Y-%m-%dT%H:%M:%SZ")
-                            days_ago = (datetime.utcnow() - pub_date).days
+                            days_ago = (datetime.now(timezone.utc) - pub_date).days
                         except:
                             days_ago = 0
                         days_ago_text = "today" if days_ago == 0 else f"{days_ago} days ago"
-                        # For display, we use a dummy outlier value
-                        outlier_val = "N/A"
+                        outlier_val = "N/A"  # Real outlier analysis can be applied here.
                         outlier_html = f"""
                         <span style="
                             background-color:#4285f4;
@@ -556,8 +550,7 @@ def show_details_page():
     video_url = f"https://www.youtube.com/watch?v={video_id}"
 
     st.subheader("Comments")
-    # Replace with actual comment fetching if needed.
-    comments = []
+    comments = []  # Replace with actual comment fetching if needed.
     if comments:
         st.write(f"Total Comments Fetched: {len(comments)}")
     else:
