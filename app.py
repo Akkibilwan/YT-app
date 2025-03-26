@@ -126,7 +126,7 @@ def save_channel_folders(folders):
         json.dump(folders, f, indent=4)
 
 # =============================================================================
-# Utility: Resolve Channel ID from Username
+# Utility: Resolve Channel ID from Username using YouTube Data API
 # =============================================================================
 def resolve_channel_id(username):
     """
@@ -141,7 +141,10 @@ def resolve_channel_id(username):
         data = response.json()
         items = data.get("items", [])
         if items:
-            return items[0]["id"]
+            resolved_id = items[0]["id"]
+            st.write(f"Resolved username '{username}' to channel ID '{resolved_id}'.")
+            return resolved_id
+    st.warning(f"Could not resolve username '{username}'. Using input as channel ID.")
     return username
 
 # =============================================================================
@@ -164,7 +167,7 @@ def extract_channel_id(input_str):
     # If the input already looks like a channel ID (usually starts with "UC"), return it.
     if input_str.startswith("UC"):
         return input_str
-    # Otherwise, treat the input as a username.
+    # Otherwise, treat it as a username and try to resolve.
     return resolve_channel_id(input_str)
 
 # =============================================================================
@@ -193,13 +196,13 @@ def show_channel_folder_manager():
 
     if action == "Create New Folder":
         folder_name = st.text_input("Folder Name")
-        channels_input = st.text_area("Enter at least one channel URL or ID (one per line):", height=100)
+        channels_input = st.text_area("Enter at least one channel URL or username (one per line):", height=100)
     elif action == "Add Channels to Existing Folder":
         if not folders:
             st.info("No folders available. Please create a folder first.")
             return
         folder_choice = st.selectbox("Select Folder", list(folders.keys()))
-        channels_input = st.text_area("Enter at least one channel URL or ID (one per line):", height=100)
+        channels_input = st.text_area("Enter at least one channel URL or username (one per line):", height=100)
     elif action == "Delete Folder":
         if not folders:
             st.info("No folders available to delete.")
@@ -223,7 +226,11 @@ def show_channel_folder_manager():
             if not lines:
                 st.error("Please enter at least one channel.")
                 return
-            channel_list = [{"channel_name": line, "channel_id": extract_channel_id(line)} for line in lines]
+            channel_list = []
+            for line in lines:
+                resolved_id = extract_channel_id(line)
+                channel_list.append({"channel_name": line, "channel_id": resolved_id})
+                st.write(f"Added channel '{line}' with resolved ID '{resolved_id}'.")
             folders[name] = channel_list
             save_channel_folders(folders)
             st.success(f"Folder '{name}' created with {len(channel_list)} channel(s).")
@@ -235,10 +242,14 @@ def show_channel_folder_manager():
             if not lines:
                 st.error("Please enter at least one channel.")
                 return
+            count = 0
             for line in lines:
-                folders[folder_choice].append({"channel_name": line, "channel_id": extract_channel_id(line)})
+                resolved_id = extract_channel_id(line)
+                folders[folder_choice].append({"channel_name": line, "channel_id": resolved_id})
+                st.write(f"Added channel '{line}' with resolved ID '{resolved_id}' to folder '{folder_choice}'.")
+                count += 1
             save_channel_folders(folders)
-            st.success(f"Added {len(lines)} channel(s) to folder '{folder_choice}'.")
+            st.success(f"Added {count} channel(s) to folder '{folder_choice}'.")
         elif action == "Delete Folder":
             if not folder_choice:
                 st.error("No folder selected.")
@@ -282,10 +293,13 @@ def fetch_youtube_results(keyword, channel_ids, timeframe, content_filter):
     else:
         published_after = None
 
-    # Use strftime to get a valid RFC 3339 string without fractional seconds.
+    # Format publishedAfter without fractional seconds.
     published_after_str = published_after.strftime("%Y-%m-%dT%H:%M:%SZ") if published_after else None
 
+    st.write("Using publishedAfter =", published_after_str)  # Debug info
+
     for channel_id in channel_ids:
+        st.write("Searching for channel ID:", channel_id)  # Debug info
         params = {
             "part": "snippet",
             "channelId": channel_id,
@@ -442,7 +456,7 @@ def show_search_page():
         with st.expander("Channels in this folder", expanded=False):
             if folders.get(folder_choice):
                 for ch in folders[folder_choice]:
-                    st.write(f"- {ch['channel_name']}")
+                    st.write(f"- {ch['channel_name']} (ID: {ch['channel_id']})")
             else:
                 st.write("(No channels)")
 
@@ -504,7 +518,7 @@ def show_search_page():
                         except:
                             days_ago = 0
                         days_ago_text = "today" if days_ago == 0 else f"{days_ago} days ago"
-                        outlier_val = "N/A"  # Real outlier analysis can be applied here.
+                        outlier_val = "N/A"
                         outlier_html = f"""
                         <span style="
                             background-color:#4285f4;
