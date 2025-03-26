@@ -1,7 +1,7 @@
 """
 app.py - A self-contained Streamlit application for YouTube Niche Search.
 It integrates:
-  • A Channel Folder Manager (with support for adding channel URLs or usernames)
+  • A Channel Folder Manager (supports adding channel URLs or usernames)
   • Real YouTube search using the YouTube Data API (API key stored in st.secrets)
   • Retention analysis and outlier scoring.
 """
@@ -228,12 +228,11 @@ def show_channel_folder_manager():
             channel_list = []
             for line in lines:
                 resolved_id = extract_channel_id(line)
-                # Validate that the resolved channel ID starts with "UC"
+                st.write(f"Input '{line}' resolved to channel ID: '{resolved_id}'")
                 if not resolved_id.startswith("UC"):
-                    st.error(f"Resolved channel ID '{resolved_id}' for input '{line}' does not appear valid.")
+                    st.error(f"Resolved channel ID '{resolved_id}' for input '{line}' is invalid. Skipping.")
                 else:
                     channel_list.append({"channel_name": line, "channel_id": resolved_id})
-                    st.write(f"Added channel '{line}' with resolved ID '{resolved_id}'.")
             if channel_list:
                 folders[name] = channel_list
                 save_channel_folders(folders)
@@ -249,8 +248,9 @@ def show_channel_folder_manager():
             count = 0
             for line in lines:
                 resolved_id = extract_channel_id(line)
+                st.write(f"Input '{line}' resolved to channel ID: '{resolved_id}'")
                 if not resolved_id.startswith("UC"):
-                    st.error(f"Resolved channel ID '{resolved_id}' for input '{line}' does not appear valid.")
+                    st.error(f"Resolved channel ID '{resolved_id}' for input '{line}' is invalid. Skipping.")
                 else:
                     folders[folder_choice].append({"channel_name": line, "channel_id": resolved_id})
                     st.write(f"Added channel '{line}' with resolved ID '{resolved_id}' to folder '{folder_choice}'.")
@@ -302,14 +302,14 @@ def fetch_youtube_results(keyword, channel_ids, timeframe, content_filter):
         published_after = None
 
     published_after_str = published_after.strftime("%Y-%m-%dT%H:%M:%SZ") if published_after else None
-    st.write("Using publishedAfter =", published_after_str)  # Debug info
+    st.write("Using publishedAfter =", published_after_str)  # Debug log
 
     for channel_id in channel_ids:
         # Validate channel_id format
         if not channel_id.startswith("UC"):
             st.error(f"Channel ID '{channel_id}' is invalid. Skipping this channel.")
             continue
-        st.write("Searching for channel ID:", channel_id)  # Debug info
+        st.write("Searching for channel ID:", channel_id)  # Debug log
         params = {
             "part": "snippet",
             "channelId": channel_id,
@@ -528,7 +528,7 @@ def show_search_page():
                         except:
                             days_ago = 0
                         days_ago_text = "today" if days_ago == 0 else f"{days_ago} days ago"
-                        outlier_val = "N/A"
+                        outlier_val = "N/A"  # Placeholder
                         outlier_html = f"""
                         <span style="
                             background-color:#4285f4;
