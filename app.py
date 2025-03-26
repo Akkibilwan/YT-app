@@ -23,9 +23,8 @@ import shutil
 import pandas as pd
 import isodate
 
-# Import your shared functions (e.g., from app.py)
-# (Ensure that app.py has the outlier formula and any other shared logic.)
-from app import process_video_data
+# Import shared functions from shared.py
+from shared import process_video_data
 
 # =============================================================================
 # Setup Logging
@@ -87,22 +86,22 @@ def load_channel_folders():
 def save_channel_folders(folders):
     """Save folder data to JSON file."""
     with open(CHANNEL_FOLDERS_FILE, "w") as f:
-        json.dump(f, f, indent=4)
+        json.dump(folders, f, indent=4)
 
 # =============================================================================
-# Channel Folder Manager UI
+# Advanced Channel Folder Manager UI
 # =============================================================================
 def show_channel_folder_manager():
     """
-    Show a UI to manage channel folders using a single form:
-    - Action dropdown: Create, Add, or Delete
-    - Folder Name or Folder Selection
-    - Multiline text for channels
+    Manage channel folders using a single form with an Action dropdown:
+      - Create New Folder
+      - Add Channels to Existing Folder
+      - Delete Folder
     """
     st.subheader("Manage Channel Folders")
     folders = load_channel_folders()
 
-    # Display existing folders (just a summary)
+    # Display existing folders summary.
     if folders:
         st.write("**Existing Folders:**")
         for folder_name, channels in folders.items():
@@ -110,18 +109,16 @@ def show_channel_folder_manager():
     else:
         st.write("No folders available yet.")
 
-    # Action selectbox
+    # Action selectbox.
     action = st.selectbox("Action", ["Create New Folder", "Add Channels to Existing Folder", "Delete Folder"])
 
-    # Create placeholders
+    # Prepare form fields.
     folder_name = ""
     folder_choice = ""
     channels_input = ""
 
     if action == "Create New Folder":
-        # Ask for a new folder name
         folder_name = st.text_input("Folder Name")
-        # Multiline for channels
         channels_input = st.text_area("Enter at least one channel name or URL (one per line):", height=100)
 
     elif action == "Add Channels to Existing Folder":
@@ -137,9 +134,13 @@ def show_channel_folder_manager():
             return
         folder_choice = st.selectbox("Select Folder to Delete", list(folders.keys()))
 
-    # Single button for all actions
-    if st.button("Create Folder"):
-        # CREATE
+    button_label = {
+        "Create New Folder": "Create Folder",
+        "Add Channels to Existing Folder": "Add Channels",
+        "Delete Folder": "Delete Folder"
+    }[action]
+
+    if st.button(button_label):
         if action == "Create New Folder":
             name = folder_name.strip()
             if not name:
@@ -152,8 +153,6 @@ def show_channel_folder_manager():
             if not lines:
                 st.error("Please enter at least one channel.")
                 return
-
-            # Convert each line into a dict or just store the string
             channel_list = []
             for line in lines:
                 channel_entry = {
@@ -161,12 +160,10 @@ def show_channel_folder_manager():
                     "channel_id": line
                 }
                 channel_list.append(channel_entry)
-
             folders[name] = channel_list
             save_channel_folders(folders)
             st.success(f"Folder '{name}' created with {len(channel_list)} channel(s).")
 
-        # ADD
         elif action == "Add Channels to Existing Folder":
             if not folder_choice:
                 st.error("No folder selected.")
@@ -175,7 +172,6 @@ def show_channel_folder_manager():
             if not lines:
                 st.error("Please enter at least one channel.")
                 return
-
             for line in lines:
                 channel_entry = {
                     "channel_name": line,
@@ -185,7 +181,6 @@ def show_channel_folder_manager():
             save_channel_folders(folders)
             st.success(f"Added {len(lines)} channel(s) to folder '{folder_choice}'.")
 
-        # DELETE
         elif action == "Delete Folder":
             if not folder_choice:
                 st.error("No folder selected.")
@@ -202,8 +197,8 @@ def show_channel_folder_manager():
 # =============================================================================
 def search_youtube(keyword, channel_ids, timeframe, content_filter, ttl=600):
     """
-    Dummy implementation for the search functionality.
-    In your actual app, replace this with real YouTube API calls or a DB query.
+    Dummy implementation for search.
+    Replace with actual YouTube API calls or DB queries.
     """
     dummy_data = [
         {
@@ -228,53 +223,43 @@ def search_youtube(keyword, channel_ids, timeframe, content_filter, ttl=600):
             "comment_to_view_ratio": "0.17%",
             "comment_to_like_ratio": "8.33%"
         },
-        # Add more dummy videos if needed
     ]
     return dummy_data
 
 def analyze_comments(comments):
-    # Dummy analysis using GPT or other methods
-    analysis = "Positive sentiment with suggestions for improvement."
-    return analysis
+    return "Positive sentiment with suggestions for improvement."
 
 def summarize_script(script_text):
-    # Dummy summary function
     return "This short video quickly covers the main topic."
 
 def get_transcript_with_fallback(video_id):
-    # Dummy transcript retrieval
     transcript = [{"start": 0, "text": "Welcome to the video."}]
     source = "dummy"
     return transcript, source
 
 def get_intro_outro_transcript(video_id, total_duration):
-    # Dummy function to return intro/outro transcripts
     intro_txt = "This is the intro of the video."
     outro_txt = "This is the outro of the video."
     return intro_txt, outro_txt
 
 def summarize_intro_outro(intro, outro):
-    # Dummy summary for intro and outro
     return "Intro summary.", "Outro summary."
 
 # =============================================================================
 # Retention Analysis Functions
 # =============================================================================
 def capture_player_screenshot_with_hover(video_url, timestamp, output_path, use_cookies):
-    # Dummy screenshot capture
     time.sleep(2)
     dummy_image = np.zeros((480, 640, 3), dtype=np.uint8)
     cv2.imwrite(output_path, dummy_image)
-    return 10  # Return a dummy duration
+    return 10
 
 def detect_retention_peaks(screenshot_path, crop_ratio, height_threshold, distance, top_n):
     roi_width = 640
     col_sums = np.random.randint(0, 255, size=(roi_width,))
     peaks, _ = find_peaks(col_sums, height=height_threshold, distance=distance)
     peaks = peaks[:top_n]
-    roi = None
-    binary_roi = None
-    return peaks, roi, binary_roi, roi_width, col_sums
+    return peaks, None, None, roi_width, col_sums
 
 def plot_brightness_profile(col_sums, peaks):
     buf = BytesIO()
@@ -291,7 +276,6 @@ def plot_brightness_profile(col_sums, peaks):
     return buf
 
 def capture_frame_at_time(video_url, target_time, output_path, use_cookies):
-    # Dummy frame capture function
     time.sleep(1)
     dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
     cv2.imwrite(output_path, dummy_frame)
@@ -353,12 +337,10 @@ def download_video_snippet(video_url, start_time, duration=10, output_path="snip
 # =============================================================================
 def show_search_page():
     st.title("Youtube Niche Search")
-
-    # Sidebar: Channel Folder Manager expander
+    # Sidebar: Channel Folder Manager
     with st.sidebar.expander("Channel Folder Manager"):
         show_channel_folder_manager()
 
-    # Sidebar: Filters in desired order
     folders = load_channel_folders()
     folder_choice = st.sidebar.selectbox("Select Folder", list(folders.keys()) if folders else ["None"])
     selected_timeframe = st.sidebar.selectbox(
@@ -393,7 +375,6 @@ def show_search_page():
             st.error("No folder or channels selected. Please select a folder with at least one channel.")
         else:
             results = search_youtube(search_query, selected_channel_ids, selected_timeframe, content_filter, ttl=600)
-            # Filter results by minimum outlier score if specified
             if min_outlier_score > 0:
                 results = [r for r in results if r.get("outlier_score", 0) >= min_outlier_score]
             st.session_state.search_results = results
@@ -427,7 +408,7 @@ def show_search_page():
         sorted_data = sorted(data, key=parse_sort_value, reverse=True)
         st.subheader(f"Found {len(sorted_data)} results (sorted by {sort_by})")
 
-        # Always create 3 columns per row
+        # Display results in 3 columns per row.
         for i in range(0, len(sorted_data), 3):
             row_chunk = sorted_data[i:i+3]
             cols = st.columns(3)
@@ -523,8 +504,7 @@ def show_details_page():
     st.subheader("Comments")
     comments_key = f"comments_{video_id}"
     if comments_key not in st.session_state:
-        # In real code, fetch actual comments from YouTube or DB. Here, just an empty list
-        st.session_state[comments_key] = []
+        st.session_state[comments_key] = []  # Replace with actual comment fetching.
     comments = st.session_state[comments_key]
     if comments:
         st.write(f"Total Comments Fetched: {len(comments)}")
@@ -649,4 +629,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Unexpected error in main UI: {e}")
         st.error("An unexpected error occurred. Please check the logs for details.")
-atexit.register(lambda: logger.info("Application shutting down"))
+    atexit.register(lambda: logger.info("Application shutting down"))
