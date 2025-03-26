@@ -1,5 +1,3 @@
-```python
-# --- START OF FILE app(1).py ---
 
 import os
 import time
