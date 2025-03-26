@@ -23,6 +23,9 @@ import shutil
 import pandas as pd
 import isodate
 
+# Import shared functions from app.py
+from app import calculate_outlier_score, get_outlier_category, process_video_data
+
 # =============================================================================
 # Setup Logging
 # =============================================================================
@@ -79,28 +82,10 @@ def save_channel_folders(folders):
         json.dump(folders, f, indent=4)
 
 # =============================================================================
-# Data Processing Functions
-# =============================================================================
-def process_video_data(data):
-    df = pd.DataFrame(data)
-    # Calculate combined performance as an example metric
-    df["combined_performance"] = df["views"] + df["likes"] * 2 + df["comments"] * 3
-    # Calculate log performance (keep this unchanged)
-    df["log_performance"] = np.log1p(df["combined_performance"])
-    # Previously, outlier score was computed as:
-    # df["outlier_score"] = df["log_performance"] * df["recency_factor"]
-    # Now we integrate the new outlier formula from app.py:
-    df["outlier_score"] = df["view_count"] / df["channel_average"]
-    # For compatibility, copy outlier_score to breakout_score
-    df["breakout_score"] = df["outlier_score"]
-    return df
-
-# =============================================================================
-# Video Search & Analysis Functions
+# Video Processing and Analysis Functions
 # =============================================================================
 def search_youtube(keyword, channel_ids, timeframe, content_filter, ttl=600):
-    # Dummy implementation for the search functionality
-    # In your actual app, this function would interact with YouTube APIs or a database
+    # Dummy implementation; replace with actual YouTube API calls or DB queries.
     dummy_data = [
         {
             "video_id": "abc123",
@@ -124,33 +109,32 @@ def search_youtube(keyword, channel_ids, timeframe, content_filter, ttl=600):
             "comment_to_view_ratio": "0.17%",
             "comment_to_like_ratio": "8.33%"
         },
-        # Add more dummy videos as needed
+        # Add more dummy videos as needed.
     ]
     return dummy_data
 
 def analyze_comments(comments):
-    # Dummy analysis using OpenAI GPT
-    analysis = "Positive sentiment with suggestions for improvement."
-    return analysis
+    # Dummy analysis using GPT or other methods.
+    return "Positive sentiment with suggestions for improvement."
 
 def summarize_script(script_text):
-    # Dummy summary function
+    # Dummy summary function.
     return "This short video quickly covers the main topic."
 
 def get_transcript_with_fallback(video_id):
-    # Dummy transcript retrieval
+    # Dummy transcript retrieval.
     transcript = [{"start": 0, "text": "Welcome to the video."}]
     source = "dummy"
     return transcript, source
 
 def get_intro_outro_transcript(video_id, total_duration):
-    # Dummy function to return intro and outro transcripts
+    # Dummy intro/outro transcript.
     intro_txt = "This is the intro of the video."
     outro_txt = "This is the outro of the video."
     return intro_txt, outro_txt
 
 def summarize_intro_outro(intro, outro):
-    # Dummy summary for intro and outro
+    # Dummy summary.
     return "Intro summary.", "Outro summary."
 
 # =============================================================================
@@ -160,7 +144,7 @@ def show_channel_folder_manager():
     st.subheader("Channel Folder Manager")
     folders = load_channel_folders()
     
-    # Display existing folders
+    # Display existing folders.
     if folders:
         st.write("**Existing Folders:**")
         for folder, channels in folders.items():
@@ -168,7 +152,7 @@ def show_channel_folder_manager():
     else:
         st.write("No folders available.")
     
-    # Form to create a new folder
+    # Form to create a new folder.
     with st.form(key="create_folder_form"):
         new_folder_name = st.text_input("New Folder Name")
         submit_new_folder = st.form_submit_button("Create Folder")
@@ -183,7 +167,7 @@ def show_channel_folder_manager():
             else:
                 st.error("Folder name cannot be empty.")
     
-    # Form to add a channel to an existing folder
+    # Form to add a channel to an existing folder.
     if folders:
         with st.form(key="add_channel_form"):
             folder_choice = st.selectbox("Select Folder", list(folders.keys()))
@@ -200,25 +184,21 @@ def show_channel_folder_manager():
                     st.error("Please fill all fields to add a channel.")
 
 # =============================================================================
-# Retention Analysis Functions
+# Retention Analysis and Video Frame Functions
 # =============================================================================
 def capture_player_screenshot_with_hover(video_url, timestamp, output_path, use_cookies):
-    # Dummy implementation to simulate screenshot capture
+    # Dummy implementation for screenshot capture.
     time.sleep(2)
-    # Save a dummy image (an empty array) as placeholder
     dummy_image = np.zeros((480, 640, 3), dtype=np.uint8)
     cv2.imwrite(output_path, dummy_image)
-    return 10  # Return dummy duration
+    return 10  # Dummy duration
 
 def detect_retention_peaks(screenshot_path, crop_ratio, height_threshold, distance, top_n):
-    # Dummy peak detection using a random example
     roi_width = 640
     col_sums = np.random.randint(0, 255, size=(roi_width,))
     peaks, _ = find_peaks(col_sums, height=height_threshold, distance=distance)
     peaks = peaks[:top_n]
-    roi = None
-    binary_roi = None
-    return peaks, roi, binary_roi, roi_width, col_sums
+    return peaks, None, None, roi_width, col_sums
 
 def plot_brightness_profile(col_sums, peaks):
     buf = BytesIO()
@@ -235,7 +215,7 @@ def plot_brightness_profile(col_sums, peaks):
     return buf
 
 def capture_frame_at_time(video_url, target_time, output_path, use_cookies):
-    # Dummy frame capture function
+    # Dummy frame capture.
     time.sleep(1)
     dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
     cv2.imwrite(output_path, dummy_frame)
@@ -297,10 +277,10 @@ def download_video_snippet(video_url, start_time, duration=10, output_path="snip
 # =============================================================================
 def show_search_page():
     st.title("Youtube Niche Search")
-    # Sidebar: Channel Folder Manager expander
+    # Sidebar: Channel Folder Manager expander.
     with st.sidebar.expander("Channel Folder Manager"):
         show_channel_folder_manager()
-    # Sidebar: Filters in desired order
+    # Sidebar: Filters.
     folders = load_channel_folders()
     folder_choice = st.sidebar.selectbox("Select Folder", list(folders.keys()) if folders else ["None"])
     selected_timeframe = st.sidebar.selectbox(
@@ -335,7 +315,6 @@ def show_search_page():
             st.error("No folder or channels selected. Please select a folder with at least one channel.")
         else:
             results = search_youtube(search_query, selected_channel_ids, selected_timeframe, content_filter, ttl=600)
-            # Filter results by minimum outlier score if specified
             if min_outlier_score > 0:
                 results = [r for r in results if r.get("outlier_score", 0) >= min_outlier_score]
             st.session_state.search_results = results
@@ -369,7 +348,7 @@ def show_search_page():
         sorted_data = sorted(data, key=parse_sort_value, reverse=True)
         st.subheader(f"Found {len(sorted_data)} results (sorted by {sort_by})")
 
-        # Always create 3 columns per row
+        # Display results in a grid (3 columns per row).
         for i in range(0, len(sorted_data), 3):
             row_chunk = sorted_data[i:i+3]
             cols = st.columns(3)
@@ -465,7 +444,7 @@ def show_details_page():
     st.subheader("Comments")
     comments_key = f"comments_{video_id}"
     if comments_key not in st.session_state:
-        st.session_state[comments_key] = get_video_comments(video_id)
+        st.session_state[comments_key] = []  # Replace with actual comment fetching function.
     comments = st.session_state[comments_key]
     if comments:
         st.write(f"Total Comments Fetched: {len(comments)}")
@@ -590,4 +569,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Unexpected error in main UI: {e}")
         st.error("An unexpected error occurred. Please check the logs for details.")
-atexit.register(lambda: logger.info("Application shutting down"))
+    atexit.register(lambda: logger.info("Application shutting down"))
