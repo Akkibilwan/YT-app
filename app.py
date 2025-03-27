@@ -43,6 +43,30 @@ def setup_logger():
     file_handler = RotatingFileHandler(log_file, maxBytes=1024*1024, backupCount=5)
     file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     stream_handler = logging.StreamHandler()
+    # Add this at the beginning of the file, right after the other imports
+
+# Handle CV2 dependency
+try:
+    import cv2
+except ModuleNotFoundError:
+    import streamlit as st
+    st.error("OpenCV (cv2) is not installed. Installing it now...")
+    import subprocess
+    import sys
+    
+    # Try to install opencv
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "opencv-python-headless"])
+        st.success("OpenCV installed successfully! Please restart the app.")
+        import cv2
+    except Exception as e:
+        st.error(f"Failed to install OpenCV: {str(e)}")
+        st.info("Please install OpenCV manually with: pip install opencv-python-headless")
+        # Create a placeholder function to prevent errors
+        class CV2Placeholder:
+            def __getattr__(self, name):
+                return lambda *args, **kwargs: None
+        cv2 = CV2Placeholder()
     stream_handler.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
     logger = logging.getLogger()
     logger.setLevel(logging.WARNING)
