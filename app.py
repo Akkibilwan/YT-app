@@ -38,7 +38,7 @@ from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, No
 import plotly.graph_objects as go
 
 # -----------------------------------------------------------------------------
-# Set page configuration (only once at the very top)
+# Set page configuration (only once at the top)
 st.set_page_config(page_title="YouTube Video Analysis", page_icon="📊", layout="wide")
 # -----------------------------------------------------------------------------
 
@@ -162,7 +162,7 @@ def parse_iso8601_duration(duration_str):
     except Exception:
         return 0
 
-# --- Define chunk_list once for use across functions ---
+# --- Define chunk_list for splitting lists into chunks
 def chunk_list(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i+n]
@@ -224,7 +224,7 @@ def show_channel_folder_manager():
     action = st.selectbox("Action", ["Create New Folder", "Modify Folder", "Delete Folder"], key="folder_action")
     if action == "Create New Folder":
         folder_name = st.text_input("Folder Name", key="new_folder_name")
-        st.write("Enter at least one channel name or URL (one per line):")
+        st.write("Enter one or more channel names/URLs (one per line):")
         channels_text = st.text_area("Channels", key="folder_channels")
         if st.button("Create Folder", key="create_folder_btn"):
             if folder_name.strip() == "":
@@ -255,14 +255,11 @@ def show_channel_folder_manager():
         selected_folder = st.selectbox("Select Folder to Modify", list(folders.keys()))
         if selected_folder:
             st.write("Channels in this folder:")
-            if folders[selected_folder]:
-                for ch in folders[selected_folder]:
-                    st.write(f"- {ch['channel_name']}")
-            else:
-                st.write("(No channels yet)")
+            for ch in folders[selected_folder]:
+                st.write(f"- {ch['channel_name']}")
             modify_action = st.radio("Modify Action", ["Add Channels", "Remove Channel"], key="modify_folder_action")
             if modify_action == "Add Channels":
-                st.write("Enter channel name(s) or URL(s) (one per line):")
+                st.write("Enter channel names/URLs (one per line):")
                 new_ch_text = st.text_area("Add Channels", key="add_channels_text")
                 if st.button("Add to Folder", key="add_to_folder_btn"):
                     lines = new_ch_text.strip().split("\n")
@@ -278,15 +275,12 @@ def show_channel_folder_manager():
                     save_channel_folders(folders)
                     st.success(f"Added {added} channel(s) to folder '{selected_folder}'.")
             else:
-                if folders[selected_folder]:
-                    channel_options = [ch["channel_name"] for ch in folders[selected_folder]]
-                    rem_choice = st.selectbox("Select channel to remove", channel_options, key="remove_channel_choice")
-                    if st.button("Remove Channel", key="remove_channel_btn"):
-                        folders[selected_folder] = [c for c in folders[selected_folder] if c["channel_name"] != rem_choice]
-                        save_channel_folders(folders)
-                        st.success(f"Channel '{rem_choice}' removed from '{selected_folder}'.")
-                else:
-                    st.info("No channels in this folder to remove.")
+                channel_options = [ch["channel_name"] for ch in folders[selected_folder]]
+                rem_choice = st.selectbox("Select channel to remove", channel_options, key="remove_channel_choice")
+                if st.button("Remove Channel", key="remove_channel_btn"):
+                    folders[selected_folder] = [c for c in folders[selected_folder] if c["channel_name"] != rem_choice]
+                    save_channel_folders(folders)
+                    st.success(f"Channel '{rem_choice}' removed from '{selected_folder}'.")
     else:
         if not folders:
             st.info("No folders available.")
@@ -337,11 +331,7 @@ def download_audio(video_id):
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     ydl_opts = {
         'format': 'bestaudio/best',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '128',
-        }],
+        'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '128'}],
         'outtmpl': output_template,
         'quiet': True,
         'no_warnings': True
@@ -375,11 +365,7 @@ def generate_transcript_with_openai(audio_file):
         avg_duration = 2.5
         for i in range(0, len(words), chunk_size):
             chunk = " ".join(words[i:i+chunk_size])
-            segments.append({
-                "start": i / chunk_size * avg_duration,
-                "duration": avg_duration,
-                "text": chunk
-            })
+            segments.append({"start": i / chunk_size * avg_duration, "duration": avg_duration, "text": chunk})
         if "_snippet.mp3" in audio_file and os.path.exists(audio_file):
             os.remove(audio_file)
         return segments, "openai"
@@ -417,20 +403,13 @@ def get_transcript_with_fallback(video_id):
         return None, None
 
 def get_intro_outro_transcript(video_id, total_duration):
-    transcript, source = get_transcript_with_fallback(video_id)
+    transcript, _ = get_transcript_with_fallback(video_id)
     if not transcript:
         return (None, None)
     end_intro = min(60, total_duration)
     start_outro = max(total_duration - 60, 0)
-    intro_lines = []
-    outro_lines = []
-    for item in transcript:
-        start_sec = float(item["start"])
-        end_sec = start_sec + float(item.get("duration", 0))
-        if end_sec > 0 and start_sec < end_intro:
-            intro_lines.append(item)
-        if end_sec > start_outro and start_sec < total_duration:
-            outro_lines.append(item)
+    intro_lines = [item for item in transcript if float(item["start"]) < end_intro]
+    outro_lines = [item for item in transcript if float(item["start"]) > start_outro]
     intro_text = " ".join(seg["text"] for seg in intro_lines) if intro_lines else None
     outro_text = " ".join(seg["text"] for seg in outro_lines) if outro_lines else None
     return (intro_text, outro_text)
@@ -446,12 +425,10 @@ def summarize_intro_outro(intro_text, outro_text):
         prompt_str += f"Intro snippet:\n{intro_text}\n\n"
     if outro_text:
         prompt_str += f"Outro snippet:\n{outro_text}\n\n"
-    prompt_str += (
-        "Please produce two short bullet-point summaries:\n"
-        "1) For the intro snippet\n"
-        "2) For the outro snippet.\n"
-        "If one snippet is missing, skip it.\n"
-    )
+    prompt_str += ("Please produce two short bullet-point summaries:\n"
+                   "1) For the intro snippet\n"
+                   "2) For the outro snippet.\n"
+                   "If one snippet is missing, skip it.\n")
     try:
         response = openai.ChatCompletion.create(model="gpt-4", messages=[{"role": "user", "content": prompt_str}])
         result_txt = response.choices[0].message.content
@@ -530,10 +507,8 @@ def calculate_metrics(df):
 def fetch_all_snippets(channel_id, order_param, timeframe, query, published_after):
     all_videos = []
     page_token = None
-    base_url = (
-        f"https://www.googleapis.com/youtube/v3/search?part=snippet"
-        f"&channelId={channel_id}&maxResults=25&type=video&order={order_param}&key={get_youtube_api_key()}"
-    )
+    base_url = (f"https://www.googleapis.com/youtube/v3/search?part=snippet"
+                f"&channelId={channel_id}&maxResults=25&type=video&order={order_param}&key={get_youtube_api_key()}")
     if published_after:
         base_url += f"&publishedAfter={published_after}"
     if query:
@@ -606,10 +581,8 @@ def search_youtube(query, channel_ids, timeframe, content_filter, ttl=600,
         return []
     all_stats = {}
     for chunk in chunk_list(vid_ids, 50):
-        stats_url = (
-            "https://www.googleapis.com/youtube/v3/videos"
-            f"?part=statistics,contentDetails&id={','.join(chunk)}&key={get_youtube_api_key()}"
-        )
+        stats_url = ("https://www.googleapis.com/youtube/v3/videos"
+                     f"?part=statistics,contentDetails&id={','.join(chunk)}&key={get_youtube_api_key()}")
         try:
             resp = requests.get(stats_url)
             resp.raise_for_status()
@@ -659,7 +632,7 @@ def search_youtube(query, channel_ids, timeframe, content_filter, ttl=600,
             video_age = (datetime.now().date() - pub_date).days
         except Exception:
             video_age = 0
-        # Determine is_short_filter based on outlier_video_type parameter
+        # Determine filter based on outlier_video_type parameter
         if outlier_video_type == "auto":
             is_short_filter = (r.get("content_category", "").lower() == "short")
         elif outlier_video_type == "shorts":
@@ -669,9 +642,10 @@ def search_youtube(query, channel_ids, timeframe, content_filter, ttl=600,
         else:
             is_short_filter = None
         if ch_id not in channel_benchmarks:
-            benchmark = compute_channel_benchmark(ch_id, video_age, is_short_filter, outlier_percentile, outlier_num_videos)
-            channel_benchmarks[ch_id] = benchmark
-        benchmark_value = channel_benchmarks[ch_id]
+            benchmark_value = compute_channel_benchmark(ch_id, video_age, is_short_filter, outlier_percentile, outlier_num_videos)
+            channel_benchmarks[ch_id] = benchmark_value
+        else:
+            benchmark_value = channel_benchmarks[ch_id]
         if benchmark_value and benchmark_value > 0:
             r["outlier_score"] = r["views"] / benchmark_value
         else:
@@ -683,7 +657,9 @@ def search_youtube(query, channel_ids, timeframe, content_filter, ttl=600,
         results = [x for x in results if x.get("content_category") == "Video"]
     return results
 
-# --- Outlier Helper Functions for Outlier Calculation ---
+# =============================================================================
+# Outlier Calculation Helper Functions (for single video analysis)
+# =============================================================================
 def parse_duration(duration_str):
     hours = re.search(r'(\d+)H', duration_str)
     minutes = re.search(r'(\d+)M', duration_str)
@@ -745,11 +721,7 @@ def fetch_channel_videos_outlier(channel_id, max_videos, api_key):
                 video_id = item['contentDetails']['videoId']
                 title = item['snippet']['title']
                 published_at = item['snippet']['publishedAt']
-                videos.append({
-                    'videoId': video_id,
-                    'title': title,
-                    'publishedAt': published_at
-                })
+                videos.append({'videoId': video_id, 'title': title, 'publishedAt': published_at})
                 if max_videos is not None and len(videos) >= max_videos:
                     break
             next_page_token = playlist_items_res.get('nextPageToken')
@@ -828,12 +800,7 @@ def generate_view_trajectory(video_id, days, total_views, is_short):
     for i in range(1, days):
         daily_views.append(trajectory[i] - trajectory[i-1])
     for day in range(days):
-        data.append({
-            'videoId': video_id,
-            'day': day,
-            'daily_views': int(daily_views[day]),
-            'cumulative_views': int(trajectory[day])
-        })
+        data.append({'videoId': video_id, 'day': day, 'daily_views': int(daily_views[day]), 'cumulative_views': int(trajectory[day])})
     return data
 
 def calculate_benchmark(df, band_percentage):
@@ -857,7 +824,7 @@ def calculate_outlier_score(current_views, channel_average):
 def create_performance_chart(benchmark_data, video_data, video_title):
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=benchmark_data['day'], 
+        x=benchmark_data['day'],
         y=benchmark_data['lower_band'],
         name='Typical Performance Range',
         fill='tonexty',
@@ -866,14 +833,14 @@ def create_performance_chart(benchmark_data, video_data, video_title):
         mode='lines'
     ))
     fig.add_trace(go.Scatter(
-        x=benchmark_data['day'], 
+        x=benchmark_data['day'],
         y=benchmark_data['channel_average'],
         name='Channel Average',
         line=dict(color='#4285f4', width=2, dash='dash'),
         mode='lines'
     ))
     fig.add_trace(go.Scatter(
-        x=benchmark_data['day'], 
+        x=benchmark_data['day'],
         y=benchmark_data['median'],
         name='Channel Median',
         line=dict(color='#34a853', width=2, dash='dot'),
@@ -881,7 +848,7 @@ def create_performance_chart(benchmark_data, video_data, video_title):
     ))
     actual_data = video_data[video_data['projected'] == False]
     fig.add_trace(go.Scatter(
-        x=actual_data['day'], 
+        x=actual_data['day'],
         y=actual_data['cumulative_views'],
         name=f'"{video_title}" (Actual)',
         line=dict(color='#ea4335', width=3),
@@ -923,121 +890,24 @@ def simulate_video_performance(video_data, benchmark_data):
         else:
             prev_cumulative = data[-1]['cumulative_views']
             daily_views = max(0, cumulative_views - prev_cumulative)
-        data.append({
-            'day': day,
-            'daily_views': daily_views,
-            'cumulative_views': cumulative_views,
-            'projected': False
-        })
+        data.append({'day': day, 'daily_views': daily_views, 'cumulative_views': cumulative_views, 'projected': False})
     return pd.DataFrame(data)
 
 def compute_channel_benchmark(channel_id, video_age, is_short_filter, percentile_range, num_videos):
+    # Fetch channel videos for the specific channel
     channel_videos, channel_name, channel_stats = fetch_channel_videos_outlier(channel_id, num_videos, YOUTUBE_API_KEY)
     if not channel_videos:
         return None
     video_ids = [v['videoId'] for v in channel_videos]
     detailed_videos = fetch_video_details_outlier(video_ids, YOUTUBE_API_KEY)
+    # Generate simulated cumulative views for all videos in the channel (with a minimum age)
     benchmark_df = generate_historical_data(detailed_videos, video_age, is_short_filter)
     if benchmark_df.empty:
         return None
     benchmark_stats = calculate_benchmark(benchmark_df, percentile_range)
     day_index = min(video_age, len(benchmark_stats) - 1)
-    if day_index < 0:
-        day_index = 0
     channel_average = benchmark_stats.loc[day_index, 'channel_average']
     return channel_average
-
-# =============================================================================
-# Outlier Calculation Functions (for single video outlier details)
-# =============================================================================
-def fetch_single_video_outlier(video_id, api_key):
-    video_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id={video_id}&key={api_key}"
-    try:
-        response = requests.get(video_url).json()
-        if 'items' not in response or not response['items']:
-            return None
-        video_data = response['items'][0]
-        duration_str = video_data['contentDetails']['duration']
-        duration_seconds = parse_duration(duration_str)
-        return {
-            'videoId': video_id,
-            'title': video_data['snippet']['title'],
-            'channelId': video_data['snippet']['channelId'],
-            'channelTitle': video_data['snippet']['channelTitle'],
-            'publishedAt': video_data['snippet']['publishedAt'],
-            'thumbnailUrl': video_data['snippet'].get('thumbnails', {}).get('medium', {}).get('url', ''),
-            'viewCount': int(video_data['statistics'].get('viewCount', 0)),
-            'likeCount': int(video_data['statistics'].get('likeCount', 0)),
-            'commentCount': int(video_data['statistics'].get('commentCount', 0)),
-            'duration': duration_seconds,
-            'isShort': duration_seconds <= 60
-        }
-    except Exception as e:
-        st.error(f"Error fetching video details: {e}")
-        return None
-
-def fetch_channel_videos_outlier(channel_id, max_videos, api_key):
-    playlist_url = f"https://www.googleapis.com/youtube/v3/channels?part=contentDetails,snippet,statistics&id={channel_id}&key={api_key}"
-    try:
-        playlist_res = requests.get(playlist_url).json()
-        if 'items' not in playlist_res or not playlist_res['items']:
-            st.error("Invalid Channel ID or no uploads found.")
-            return None, None, None
-        channel_info = playlist_res['items'][0]
-        channel_name = channel_info['snippet']['title']
-        channel_stats = channel_info['statistics']
-        uploads_playlist_id = channel_info['contentDetails']['relatedPlaylists']['uploads']
-        videos = []
-        next_page_token = ""
-        while (max_videos is None or len(videos) < max_videos) and next_page_token is not None:
-            playlist_items_url = f"https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails,snippet&maxResults=50&playlistId={uploads_playlist_id}&key={api_key}"
-            if next_page_token:
-                playlist_items_url += f"&pageToken={next_page_token}"
-            playlist_items_res = requests.get(playlist_items_url).json()
-            for item in playlist_items_res.get('items', []):
-                video_id = item['contentDetails']['videoId']
-                title = item['snippet']['title']
-                published_at = item['snippet']['publishedAt']
-                videos.append({
-                    'videoId': video_id,
-                    'title': title,
-                    'publishedAt': published_at
-                })
-                if max_videos is not None and len(videos) >= max_videos:
-                    break
-            next_page_token = playlist_items_res.get('nextPageToken')
-        return videos, channel_name, channel_stats
-    except Exception as e:
-        st.error(f"Error fetching YouTube data: {e}")
-        return None, None, None
-
-def fetch_video_details_outlier(video_ids, api_key):
-    if not video_ids:
-        return {}
-    all_details = {}
-    video_chunks = [video_ids[i:i+50] for i in range(0, len(video_ids), 50)]
-    for chunk in video_chunks:
-        video_ids_str = ','.join(chunk)
-        details_url = f"https://www.googleapis.com/youtube/v3/videos?part=contentDetails,statistics,snippet&id={video_ids_str}&key={api_key}"
-        try:
-            details_res = requests.get(details_url).json()
-            for item in details_res.get('items', []):
-                duration_str = item['contentDetails']['duration']
-                duration_seconds = parse_duration(duration_str)
-                published_at = item['snippet']['publishedAt']
-                all_details[item['id']] = {
-                    'duration': duration_seconds,
-                    'viewCount': int(item['statistics'].get('viewCount', 0)),
-                    'likeCount': int(item['statistics'].get('likeCount', 0)),
-                    'commentCount': int(item['statistics'].get('commentCount', 0)),
-                    'publishedAt': published_at,
-                    'title': item['snippet']['title'],
-                    'thumbnailUrl': item['snippet']['thumbnails'].get('medium', {}).get('url', ''),
-                    'isShort': duration_seconds <= 60
-                }
-        except Exception as e:
-            st.warning(f"Error fetching details for some videos: {e}")
-    return all_details
 
 # =============================================================================
 # Unified Search Page (Single Navigation)
@@ -1054,13 +924,10 @@ def show_search_page():
     content_filter = st.sidebar.selectbox("Filter By Content Type", ["Shorts", "Videos", "Both"], index=2)
     keyword = st.sidebar.text_input("Keyword (optional)", "")
     
-    # Sidebar: Outlier Calculation Settings
+    # Sidebar: Outlier Settings (for benchmark calculation)
     st.sidebar.markdown("### Outlier Settings")
     include_all = st.sidebar.checkbox("Include all videos for benchmark", value=True)
-    if include_all:
-        num_videos_for_benchmark = None
-    else:
-        num_videos_for_benchmark = st.sidebar.slider("Number of videos for benchmark", 10, 200, 50, 10)
+    num_videos_for_benchmark = None if include_all else st.sidebar.slider("Number of videos for benchmark", 10, 200, 50, 10)
     video_type_for_benchmark = st.sidebar.radio("Video Type for Benchmark", ["all", "long_form", "shorts", "auto"], index=0)
     percentile_range = st.sidebar.slider("Middle Percentage Range", 10, 100, 50, 5)
     
@@ -1111,6 +978,7 @@ def show_search_page():
         sorted_data = sorted(data, key=parse_sort_value, reverse=True)
         st.subheader(f"Found {len(sorted_data)} results")
         
+        # Display search results in a grid (3 columns per row)
         for i in range(0, len(sorted_data), 3):
             row_chunk = sorted_data[i:i+3]
             cols = st.columns(3)
@@ -1224,13 +1092,10 @@ def show_details_page():
         st.experimental_rerun()
 
 # =============================================================================
-# Main: Single Navigation (Search Page only)
+# Main: Single Navigation (Search Page Only)
 # =============================================================================
 def main():
     init_db(DB_PATH)
-    # Use only one navigation: the search page
-    if "page" not in st.session_state:
-        st.session_state.page = "search"
     if "selected_video_id" in st.session_state:
         show_details_page()
     else:
