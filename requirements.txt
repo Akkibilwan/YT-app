@@ -1,1 +1,15 @@
 
+streamlit
+numpy
+matplotlib
+scipy
+requests
+openai
+pandas
+isodate
+Pillow
+selenium
+webdriver-manager
+imageio-ffmpeg
+youtube-transcript-api
+yt-dlp
