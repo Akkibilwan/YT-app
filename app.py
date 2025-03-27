@@ -512,8 +512,12 @@ def calculate_metrics(df):
     df["vph_ratio"] = df["effective_vph"] / np.maximum(channel_avg_vph_last30, 0.1)
     df["engagement_ratio"] = df["engagement_rate"] / np.maximum(channel_avg_engagement, 0.001)
 
-    df["combined_performance"] = (0.9 * df["vph_ratio"]) + (0.1 * df["engagement_ratio"])
-    df["log_performance"] = np.log1p(df["combined_performance"])
+    # Integration from app.py - New outlier calculation
+    def calculate_outlier_score(current_views, channel_average):
+        """Calculate outlier score as the ratio of current views to channel average"""
+        if channel_average <= 0:
+            return 0
+        return current_views / channel_average
 
     def recency_factor(days):
         if days <= 30:
@@ -524,7 +528,160 @@ def calculate_metrics(df):
             return 1.0
 
     df["recency_factor"] = df["days_since_published"].apply(recency_factor)
+    
+    # Apply the new outlier formula while keeping the recency factor
+    df["outlier_score"] = df.apply(
+        lambda row: calculate_outlier_score(row["views"], row["channel_avg_vph"]), axis=1
+    )
+    df["outlier_score"] = df["outlier_score"] * df["recency_factor"]
+    df["breakout_score"] = df["outlier_score"]
 
+    df["outlier_cvr"] = df["cvr_float"] / np.maximum(channel_avg_cvr, 0.001)
+    df["outlier_clr"] = df["clr_float"] / np.maximum(channel_avg_clr, 0.001)
+
+    df["formatted_views"] = df["views"].apply(format_number)
+    df["comment_to_view_ratio"] = df["cvr_float"].apply(lambda x: f"{(x*100):.2f}%")
+    df["comment_to_like_ratio"] = df["clr_float"].apply(lambda x: f"{(x*100):.2f}%")
+    
+    df["vph_display"] = df["effective_vph"].apply(lambda x: f"{int(round(x,0))} VPH" if x>0 else "0 VPH")
+
+    return df, None
+
+def fetch_all_snippets(channel_id, order_param, timeframe, query, published_after):
+    all_videos = []
+    page_token = None
+    base_url = (
+        f"https://www.googleapis.com/youtube/v3/search?part=snippet"
+        f"&channelId={channel_id}&maxResults=25&type=video&order={order_param}&key={get_youtube_api_key()}"
+    )
+    if published_after:
+        base_url += f"&publishedAfter={published_after}"
+    if query:
+        base_url += f"&q={query}"
+    while True:
+        url = base_url
+        if page_token:
+            url += f"&pageToken={page_token}"
+        try:
+            logger.info(f"Requesting URL: {url}")
+            resp = requests.get(url)
+            logger.info(f"Response status code: {resp.status_code}")
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error during snippet request. URL: {url}")
+            try:
+                logger.error(f"Response text: {resp.text}")
+            except Exception:
+                logger.error("No response text available.")
+            logger.error(f"Snippet request failed for channel {channel_id}: {str(e)}")
+            break
+        items = data.get("items", [])
+        for it in items:
+            vid_id = it["id"].get("videoId", "")
+            if not vid_id:
+                continue
+            snippet = it["snippet"]
+            all_videos.append({
+                "video_id": vid_id,
+                "title": snippet["title"],
+                "channel_name": snippet["channelTitle"],
+                "publish_date": format_date(snippet["publishedAt"]),
+                "published_at": snippet["publishedAt"],
+                "thumbnail": snippet["thumbnails"]["medium"]["url"]
+            })
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
+        if len(all_videos) >= 200:
+            break
+    return all_videos
+
+def search_youtube(query, channel_ids, timeframe, content_filter, ttl=600):
+    # Use a longer TTL for broad 3-month searches without a query.
+    if query.strip() == "" and timeframe == "3 months" and content_filter.lower() == "both":
+        ttl = 7776000
+    query = query.strip()  # Use raw query input now
+    cache_key = build_cache_key(query, channel_ids, timeframe, content_filter)
+    cached = get_cached_result(cache_key, ttl=ttl)
+    if cached and isinstance(cached, list) and len(cached) > 0 and "outlier_cvr" in cached[0]:
+        return cached
+    order_param = "relevance" if query else "date"
+    all_videos = []
+    pub_after = None
+    if timeframe != "Lifetime":
+        now = datetime.now(timezone.utc)
+        tmap = {
+            "Last 24 hours": now - timedelta(days=1),
+            "Last 48 hours": now - timedelta(days=2),
+            "Last 4 days": now - timedelta(days=4),
+            "Last 7 days": now - timedelta(days=7),
+            "Last 15 days": now - timedelta(days=15),
+            "Last 28 days": now - timedelta(days=28),
+            "3 months": now - timedelta(days=90),
+        }
+        pub_dt = tmap.get(timeframe)
+        if pub_dt and pub_dt < now:
+            pub_after = pub_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+    for cid in channel_ids:
+        snippet_data = fetch_all_snippets(cid, order_param, timeframe, query, pub_after)
+        all_videos.extend(snippet_data)
+    vid_ids = [x["video_id"] for x in all_videos if x["video_id"]]
+    if not vid_ids:
+        set_cached_result(cache_key, [])
+        return []
+    all_stats = {}
+    for chunk in chunk_list(vid_ids, 50):
+        stats_url = (
+            "https://www.googleapis.com/youtube/v3/videos"
+            f"?part=statistics,contentDetails&id={','.join(chunk)}&key={get_youtube_api_key()}"
+        )
+        try:
+            resp = requests.get(stats_url)
+            resp.raise_for_status()
+            dd = resp.json()
+            for item in dd.get("items", []):
+                vid = item["id"]
+                stt = item.get("statistics", {})
+                cdt = item.get("contentDetails", {})
+                dur_str = cdt.get("duration", "PT0S")
+                tot_sec = parse_iso8601_duration(dur_str)
+                # Consider everything strictly less than 180 sec as a short.
+                cat = "Short" if tot_sec < 180 else "Video"
+                vc = int(stt.get("viewCount", 0))
+                lk = int(stt.get("likeCount", 0))
+                cm = int(stt.get("commentCount", 0))
+                all_stats[vid] = {
+                    "views": vc,
+                    "like_count": lk,
+                    "comment_count": cm,
+                    "duration_seconds": tot_sec,
+                    "content_category": cat,
+                    "published_at": next((x["published_at"] for x in all_videos if x["video_id"] == vid), None)
+                }
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Stats+contentDetails request failed: {str(e)}")
+            set_cached_result(cache_key, [])
+            return []
+    final_results = []
+    for av in all_videos:
+        vid = av["video_id"]
+        if vid not in all_stats:
+            continue
+        stat = all_stats[vid]
+        combined = {**av, **stat}
+        final_results.append(combined)
+    df = pd.DataFrame(final_results)
+    df, _ = calculate_metrics(df)
+    results = df.to_dict("records")
+    set_cached_result(cache_key, results)
+    if content_filter.lower() == "shorts":
+        results = [x for x in results if x.get("content_category") == "Short"]
+    elif content_filter.lower() == "videos":
+        results = [x for x in results if x.get("content_category") == "Video"]
+    return results
+
+# =============================================================================
 # 9. Comments & Analysis
 # =============================================================================
 def analyze_comments(comments):
@@ -750,34 +907,286 @@ def show_search_page():
         ["Last 24 hours", "Last 48 hours", "Last 4 days", "Last 7 days", "Last 15 days", "Last 28 days", "3 months", "Lifetime"]
     )
     content_filter = st.sidebar.selectbox("Filter By Content Type", ["Shorts", "Videos", "Both"], index=2)
+    min_outlier_score = st.sidebar.number_input("Minimum Outlier Score", value=0.0, step=0.1, format="%.2f")
+    search_query = st.sidebar.text_input("Keyword (optional)", "")
+    
+    selected_channel_ids = []
+    if folder_choice != "None":
+        for ch in folders[folder_choice]:
+            selected_channel_ids.append(ch["channel_id"])
 
+    st.write(f"**Selected Folder**: {folder_choice}")
+    if folder_choice != "None":
+        with st.expander("Channels in this folder", expanded=False):
+            if folders[folder_choice]:
+                for ch in folders[folder_choice]:
+                    st.write(f"- {ch['channel_name']}")
+            else:
+                st.write("(No channels)")
+    
+    if st.sidebar.button("Clear Cache (force new)"):
+        with sqlite3.connect(DB_PATH) as c:
+            c.execute("DELETE FROM youtube_cache")
+        st.sidebar.success("Cache cleared. Next search is fresh.")
+
+    if st.sidebar.button("Search"):
+        if folder_choice == "None" or not selected_channel_ids:
+            st.error("No folder or channels selected. Please select a folder with at least one channel.")
+        else:
+            results = search_youtube(search_query, selected_channel_ids, selected_timeframe, content_filter, ttl=600)
+            # Filter results by minimum outlier score if specified
+            if min_outlier_score > 0:
+                results = [r for r in results if r.get("outlier_score", 0) >= min_outlier_score]
+            st.session_state.search_results = results
+            st.session_state.page = "search"
+
+    if "search_results" in st.session_state and st.session_state.search_results:
+        data = st.session_state.search_results
+        sort_options = [
+            "views",
+            "upload_date",
+            "outlier_score",
+            "outlier_cvr",
+            "outlier_clr",
+            "comment_to_view_ratio",
+            "comment_to_like_ratio",
+            "comment_count"
+        ]
+        sort_by = st.selectbox("Sort by:", sort_options, index=0)
+
+        def parse_sort_value(item):
+            if sort_by == "upload_date":
+                try:
+                    return datetime.strptime(item["published_at"], "%Y-%m-%dT%H:%M:%SZ")
+                except:
+                    return datetime.min
+            val = item.get(sort_by, 0)
+            if sort_by in ("comment_to_view_ratio", "comment_to_like_ratio"):
+                return float(val.replace("%", "")) if "%" in val else 0.0
+            return float(val) if isinstance(val, (int, float, str)) else 0.0
+
+        sorted_data = sorted(data, key=parse_sort_value, reverse=True)
+        st.subheader(f"Found {len(sorted_data)} results (sorted by {sort_by})")
+
+        # Always create 3 columns per row
+        for i in range(0, len(sorted_data), 3):
+            row_chunk = sorted_data[i:i+3]
+            cols = st.columns(3)
+            for j in range(3):
+                with cols[j]:
+                    if j < len(row_chunk):
+                        row = row_chunk[j]
+                        days_ago = int(round(row.get("days_since_published", 0)))
+                        days_ago_text = "today" if days_ago == 0 else f"{days_ago} days ago"
+                        outlier_val = f"{row['outlier_score']:.2f}x"
+                        outlier_html = f"""
+                        <span style="
+                            background-color:#4285f4;
+                            color:white;
+                            padding:3px 8px;
+                            border-radius:12px;
+                            font-size:0.95rem;
+                            font-weight:bold;">
+                            {outlier_val}
+                        </span>
+                        """
+                        watch_url = f"https://www.youtube.com/watch?v={row['video_id']}"
+                        container_html = f"""
+                        <div style="
+                            border: 1px solid #CCC;
+                            border-radius: 6px;
+                            padding: 12px;
+                            height: 400px;
+                            overflow: hidden;
+                            display: flex;
+                            flex-direction: column;
+                            justify-content: flex-start;
+                            margin-bottom: 1rem;
+                        ">
+                          <a href="{watch_url}" target="_blank">
+                            <img src="{row['thumbnail']}" style="width:100%; border-radius:4px; margin-bottom:0.5rem;" />
+                          </a>
+                          <div style="font-weight:bold; font-size:1rem; text-align:left; margin-bottom:0.3rem;">
+                            {row['title']}
+                          </div>
+                          <div style="font-size:0.9rem; text-align:left; margin-bottom:0.5rem; color:#555;">
+                            {row['channel_name']}
+                          </div>
+                          <div style="display:flex; justify-content:space-between; margin-bottom:0.3rem;">
+                            <span style="font-weight:bold; color:#FFA500; font-size:0.95rem;">
+                              {row['formatted_views']} views
+                            </span>
+                            {outlier_html}
+                          </div>
+                          <div style="display:flex; justify-content:space-between; margin-bottom:0.3rem;">
+                            <span style="font-size:0.85rem;">
+                              {row.get('vph_display', '0 VPH')}
+                            </span>
+                            <span style="font-size:0.85rem;">
+                              Published {days_ago_text}
+                            </span>
+                          </div>
+                        </div>
+                        """
+                        st.markdown(container_html, unsafe_allow_html=True)
+                        if st.checkbox("View more analytics", key=f"toggle_{row['video_id']}"):
+                            st.write(f"**Channel**: {row['channel_name']}")
+                            st.write(f"**Category**: {row['content_category']}")
+                            st.write(f"**Comments**: {row['comment_count']}")
+                            st.markdown(f"**C/V Ratio**: {row['comment_to_view_ratio']} (Outlier: {row['outlier_cvr']:.2f})")
+                            st.markdown(f"**C/L Ratio**: {row['comment_to_like_ratio']} (Outlier: {row['outlier_clr']:.2f})")
+                            if st.button("View Details", key=f"view_{row['video_id']}"):
+                                st.session_state.selected_video_id = row["video_id"]
+                                st.session_state.selected_video_title = row["title"]
+                                st.session_state.selected_video_duration = row["duration_seconds"]
+                                st.session_state.selected_video_publish_at = row["published_at"]
+                                st.session_state.page = "details"
+                                st.stop()
+                    else:
+                        st.empty()
+
+def show_details_page():
+    video_id = st.session_state.get("selected_video_id")
+    video_title = st.session_state.get("selected_video_title")
+    total_duration = st.session_state.get("selected_video_duration", 0)
+    published_at = st.session_state.get("selected_video_publish_at")
+
+    if not video_id or not video_title:
+        st.write("No video selected. Please go back to Search.")
+        if st.button("Back to Search", key="details_back"):
+            st.session_state.page = "search"
+            st.stop()
+        return
+
+    st.title(f"Details for: {video_title}")
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    st.subheader("Comments")
+    comments_key = f"comments_{video_id}"
+    if comments_key not in st.session_state:
+        st.session_state[comments_key] = get_video_comments(video_id)
+    comments = st.session_state[comments_key]
+    if comments:
+        st.write(f"Total Comments Fetched: {len(comments)}")
+        top_5 = sorted(comments, key=lambda c: c["likeCount"], reverse=True)[:5]
+        st.write("**Top 5 Comments (by Likes):**")
+        for c in top_5:
+            st.markdown(f"**{c['likeCount']} likes** - {c['text']}", unsafe_allow_html=True)
+        with st.spinner("Analyzing comments with GPT..."):
+            analysis = analyze_comments(comments)
+        st.write("**Comments Analysis (Positive, Negative, Suggested Topics):**")
+        st.write(analysis)
+    else:
+        st.write("No comments available for this video.")
+
+    st.subheader("Script")
+    transcript, source = get_transcript_with_fallback(video_id)
+    is_short = ("shorts" in video_url.lower()) or (total_duration < 60)
+    if is_short:
+        if transcript:
+            script_text = " ".join([seg["text"] for seg in transcript])
+            st.markdown("**Full Script:**")
+            st.write(script_text)
+            with st.spinner("Summarizing short's script with GPT..."):
+                short_summary = summarize_script(script_text)
+            st.subheader("Script Summary")
+            st.write(short_summary)
+        else:
+            st.info("Transcript unavailable for this short.")
+    else:
+        with st.spinner("Fetching intro & outro script..."):
+            intro_txt, outro_txt = get_intro_outro_transcript(video_id, total_duration)
+        st.markdown("**Intro Script (First 1 minute):**")
+        st.write(intro_txt if intro_txt else "*No intro script available.*")
+        st.markdown("**Outro Script (Last 1 minute):**")
+        st.write(outro_txt if (outro_txt and total_duration > 120) else "*No outro script available or video is too short.*")
+        with st.spinner("Summarizing intro & outro script with GPT..."):
+            intro_summary, outro_summary = summarize_intro_outro(intro_txt or "", outro_txt or "")
+        st.subheader("Intro & Outro Summaries")
+        st.write(intro_summary if intro_summary else "*No summary available.*")
+
+    st.subheader("Retention Analysis")
+    if is_short:
+        st.info("Retention analysis is available only for full-length videos. This appears to be a short video.")
+    else:
+        if published_at:
+            try:
+                published_dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                if (datetime.now(timezone.utc) - published_dt) < timedelta(days=3):
+                    st.info("Retention analysis is available only for videos posted at least 3 days ago.")
+                else:
+                    if st.button("Run Retention Analysis"):
+                        try:
+                            base_timestamp = total_duration if total_duration and total_duration > 0 else 120
+                            st.info(f"Using base timestamp: {base_timestamp:.2f} sec (from video duration)")
+                            snippet_duration = st.number_input("Snippet Duration for Peaks (sec):", value=5, min_value=3, max_value=30, step=1)
+                            with st.spinner("Capturing retention screenshot..."):
+                                screenshot_path = "player_retention.png"
+                                duration = capture_player_screenshot_with_hover(video_url, timestamp=base_timestamp, output_path=screenshot_path, use_cookies=True)
+                            if os.path.exists(screenshot_path):
+                                st.image(screenshot_path, caption="Player Screenshot for Retention Analysis")
+                            else:
+                                st.error("Retention screenshot not found.")
+                                return
+                            with st.spinner("Analyzing retention peaks..."):
+                                peaks, roi, binary_roi, roi_width, col_sums = detect_retention_peaks(
+                                    screenshot_path, crop_ratio=0.2, height_threshold=200, distance=20, top_n=5
+                                )
+                            st.write(f"Detected {len(peaks)} retention peak(s): {peaks}")
+                            buf = plot_brightness_profile(col_sums, peaks)
+                            st.image(buf, caption="Brightness Profile with Detected Peaks")
+                            for idx, peak_x in enumerate(peaks):
+                                peak_time = (peak_x / roi_width) * duration
+                                st.markdown(f"**Retention Peak {idx+1} at {peak_time:.2f} sec**")
+                                peak_frame_path = f"peak_frame_retention_{idx+1}.png"
+                                with st.spinner(f"Capturing frame for retention peak {idx+1}..."):
+                                    capture_frame_at_time(video_url, target_time=peak_time, output_path=peak_frame_path, use_cookies=True)
+                                if os.path.exists(peak_frame_path):
+                                    st.image(peak_frame_path, caption=f"Frame at {peak_time:.2f} sec")
+                                else:
+                                    st.error(f"Failed to capture frame for retention peak {idx+1}")
+                                if check_ytdlp_installed():
+                                    adjusted_start_time = max(0, peak_time - snippet_duration / 2)
+                                    snippet_path = f"peak_snippet_{idx+1}.mp4"
+                                    with st.spinner(f"Downloading video snippet for retention peak {idx+1}..."):
+                                        download_video_snippet(video_url, start_time=adjusted_start_time, duration=snippet_duration, output_path=snippet_path)
+                                    if os.path.exists(snippet_path) and os.path.getsize(snippet_path) > 0:
+                                        st.write(f"Video Snippet for Peak {idx+1} (±{snippet_duration/2} sec)")
+                                        st.video(snippet_path)
+                                    else:
+                                        st.error(f"Video snippet download failed for retention peak {idx+1}.")
+                                else:
+                                    st.error("yt-dlp is not installed. Cannot download video snippet.")
+                                if transcript:
+                                    snippet_text = filter_transcript(transcript, target_time=peak_time, window=5)
+                                    if snippet_text:
+                                        st.markdown(f"**Transcript Snippet:** {snippet_text}")
+                                    else:
+                                        st.write("No transcript snippet found for this peak.")
+                        except Exception as e:
+                            st.error(f"Error during retention analysis: {e}")
+            except Exception as e:
+                logger.error(f"Error parsing published_at: {e}")
+        else:
+            st.info("No published date available; cannot determine retention analysis eligibility.")
+    if st.button("Back to Search", key="details_back_button"):
+        st.session_state.page = "search"
+        st.stop()
+
+def main():
+    init_db(DB_PATH)
+    if "page" not in st.session_state:
+        st.session_state.page = "search"
+    page = st.session_state.get("page")
+    if page == "search":
+        show_search_page()
+    elif page == "details":
+        show_details_page()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        logger.error(f"Unexpected error in main UI: {e}")
+        st.error("An unexpected error occurred. Please check the logs for details.")
 atexit.register(lambda: logger.info("Application shutting down"))
-
-
-
-def calculate_outlier_score(current_views, channel_average):
-    """Calculate outlier score as the ratio of current views to channel average"""
-    if channel_average <= 0:
-        return 0
-    return current_views / channel_average
-
-outlier_score = calculate_outlier_score(video_details['viewCount'], channel_average)
-
-if outlier_score >= 2.0:
-    outlier_category = "Significant Positive Outlier"
-    outlier_class = "outlier-high"
-elif outlier_score >= 1.5:
-    outlier_category = "Positive Outlier"
-    outlier_class = "outlier-high"
-elif outlier_score >= 1.2:
-    outlier_category = "Slight Positive Outlier"
-    outlier_class = "outlier-normal"
-elif outlier_score >= 0.8:
-    outlier_category = "Normal Performance"
-    outlier_class = "outlier-normal"
-elif outlier_score >= 0.5:
-    outlier_category = "Slight Negative Outlier"
-    outlier_class = "outlier-low"
-else:
-    outlier_category = "Significant Negative Outlier"
-    outlier_class = "outlier-low"
