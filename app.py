@@ -799,26 +799,37 @@ def capture_player_screenshot_with_hover(video_url, timestamp, output_path="play
     return duration
 
 def detect_retention_peaks(image_path, crop_ratio=0.2, height_threshold=200, distance=20, top_n=5):
-    if not os.path.exists(image_path):
-        raise FileNotFoundError(f"File {image_path} not found.")
-    img = cv2.imread(image_path)
-    if img is None:
-        raise ValueError(f"Failed to read image from {image_path}.")
-    height, width, _ = img.shape
-    roi = img[int(height * (1 - crop_ratio)):height, 0:width]
-    gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    _, binary_roi = cv2.threshold(gray_roi, 200, 255, cv2.THRESH_BINARY)
-    col_sums = np.sum(binary_roi, axis=0)
-    peaks, properties = find_peaks(col_sums, height=height_threshold, distance=distance)
-    if len(peaks) > top_n:
-        peak_heights = properties["peak_heights"]
-        top_indices = np.argsort(peak_heights)[-top_n:]
-        top_peaks = peaks[top_indices]
-        top_peaks = np.sort(top_peaks)
-    else:
-        top_peaks = peaks
-    return top_peaks, roi, binary_roi, width, col_sums
-
+    # Check if OpenCV is available
+    try:
+        import cv2
+        import numpy as np
+        from scipy.signal import find_peaks
+        
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"File {image_path} not found.")
+        img = cv2.imread(image_path)
+        if img is None:
+            raise ValueError(f"Failed to read image from {image_path}.")
+        height, width, _ = img.shape
+        roi = img[int(height * (1 - crop_ratio)):height, 0:width]
+        gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        _, binary_roi = cv2.threshold(gray_roi, 200, 255, cv2.THRESH_BINARY)
+        col_sums = np.sum(binary_roi, axis=0)
+        peaks, properties = find_peaks(col_sums, height=height_threshold, distance=distance)
+        if len(peaks) > top_n:
+            peak_heights = properties["peak_heights"]
+            top_indices = np.argsort(peak_heights)[-top_n:]
+            top_peaks = peaks[top_indices]
+            top_peaks = np.sort(top_peaks)
+        else:
+            top_peaks = peaks
+        return top_peaks, roi, binary_roi, width, col_sums
+        
+    except (ImportError, ModuleNotFoundError) as e:
+        st.error(f"Required module not available: {str(e)}")
+        st.warning("OpenCV (cv2) is required for retention analysis. Please install it with: pip install opencv-python-headless")
+        # Return dummy values that will be handled by the calling function
+        return [], None, None, 0, []
 def capture_frame_at_time(video_url, target_time, output_path="frame_retention.png", use_cookies=True):
     options = Options()
     options.add_argument("--headless")
@@ -1129,17 +1140,37 @@ def show_details_page():
         st.subheader("Intro & Outro Summaries")
         st.write(intro_summary if intro_summary else "*No summary available.*")
 
-    st.subheader("Retention Analysis")
-    if is_short:
-        st.info("Retention analysis is available only for full-length videos. This appears to be a short video.")
+    # In the show_details_page function, modify the Retention Analysis section:
+
+st.subheader("Retention Analysis")
+if is_short:
+    st.info("Retention analysis is available only for full-length videos. This appears to be a short video.")
+else:
+    # Check if OpenCV is available
+    try:
+        import cv2
+        opencv_available = True
+    except (ImportError, ModuleNotFoundError):
+        opencv_available = False
+        st.error("OpenCV (cv2) is not installed. Retention analysis is unavailable.")
+        st.info("To enable retention analysis, install OpenCV with: pip install opencv-python-headless")
+        
+    if not opencv_available:
+        # Skip retention analysis if OpenCV is not available
+        pass
+    elif published_at:
+        try:
+            published_dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - published_dt) < timedelta(days=3):
+                st.info("Retention analysis is available only for videos posted at least 3 days ago.")
+            else:
+                if st.button("Run Retention Analysis"):
+                    # Rest of your retention analysis code remains the same
+                    # ...
+        except Exception as e:
+            logger.error(f"Error parsing published_at: {e}")
     else:
-        if published_at:
-            try:
-                published_dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                if (datetime.now(timezone.utc) - published_dt) < timedelta(days=3):
-                    st.info("Retention analysis is available only for videos posted at least 3 days ago.")
-                else:
-                    if st.button("Run Retention Analysis"):
+        st.info("No published date available; cannot determine retention analysis eligibility.")
                         try:
                             base_timestamp = total_duration if total_duration and total_duration > 0 else 120
                             st.info(f"Using base timestamp: {base_timestamp:.2f} sec (from video duration)")
