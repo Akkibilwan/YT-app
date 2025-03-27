@@ -1,6 +1,19 @@
 import os
 import time
 import json
+try:
+    import cv2
+except ModuleNotFoundError:
+    # Create a placeholder module to prevent errors
+    import sys
+    from types import ModuleType
+    cv2 = ModuleType('cv2')
+    sys.modules['cv2'] = cv2
+    # Add necessary attributes or methods that might be accessed
+    cv2.imread = lambda *args, **kwargs: None
+    cv2.cvtColor = lambda *args, **kwargs: None
+    cv2.threshold = lambda *args, **kwargs: (None, None)
+    cv2.COLOR_BGR2GRAY = 0
 import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
