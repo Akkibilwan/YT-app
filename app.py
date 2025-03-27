@@ -35,8 +35,13 @@ from webdriver_manager.chrome import ChromeDriverManager
 import imageio_ffmpeg
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
-# Additional import for outlier analysis charting
+# For outlier analysis charting
 import plotly.graph_objects as go
+
+# -----------------------------------------------------------------------------
+# Set page configuration once at the top
+st.set_page_config(page_title="YouTube Video Analysis", page_icon="📊", layout="wide")
+# -----------------------------------------------------------------------------
 
 # =============================================================================
 # 1. Logging Setup
@@ -61,7 +66,6 @@ logger = setup_logger()
 # 2. API Keys from Streamlit Secrets
 # =============================================================================
 try:
-    # Use the same YouTube API key for both parts
     YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]["key"]
 except Exception as e:
     st.error("No YouTube API key provided in secrets!")
@@ -128,7 +132,7 @@ def delete_cache_key(cache_key, db_path=DB_PATH):
         logger.error(f"delete_cache_key DB error: {str(e)}")
 
 # =============================================================================
-# 4. Utility Helpers (Common to both modules)
+# 4. Utility Helpers
 # =============================================================================
 def format_date(date_string):
     try:
@@ -475,7 +479,7 @@ def summarize_script(script_text):
         return "Script summary failed."
 
 # =============================================================================
-# 8. Searching & Calculating Metrics (without outlier calc)
+# 8. Searching & Calculating Metrics (Search Function)
 # =============================================================================
 def chunk_list(lst, n):
     for i in range(0, len(lst), n):
@@ -529,6 +533,7 @@ def calculate_metrics(df):
 
     return df, None
 
+# Modify fetch_all_snippets to also store channel_id
 def fetch_all_snippets(channel_id, order_param, timeframe, query, published_after):
     all_videos = []
     page_token = None
@@ -568,6 +573,7 @@ def fetch_all_snippets(channel_id, order_param, timeframe, query, published_afte
                 "video_id": vid_id,
                 "title": snippet["title"],
                 "channel_name": snippet["channelTitle"],
+                "channel_id": snippet.get("channelId", ""),  # Added channel_id here
                 "publish_date": format_date(snippet["publishedAt"]),
                 "published_at": snippet["publishedAt"],
                 "thumbnail": snippet["thumbnails"]["medium"]["url"]
@@ -585,7 +591,7 @@ def search_youtube(query, channel_ids, timeframe, content_filter, ttl=600):
     query = query.strip()
     cache_key = build_cache_key(query, channel_ids, timeframe, content_filter)
     cached = get_cached_result(cache_key, ttl=ttl)
-    if cached and isinstance(cached, list) and len(cached) > 0 and "outlier_cvr" in cached[0]:
+    if cached and isinstance(cached, list) and len(cached) > 0 and "outlier_score" in cached[0]:
         return cached
     order_param = "relevance" if query else "date"
     all_videos = []
@@ -654,6 +660,30 @@ def search_youtube(query, channel_ids, timeframe, content_filter, ttl=600):
     df = pd.DataFrame(final_results)
     df, _ = calculate_metrics(df)
     results = df.to_dict("records")
+    # --- Integrate Outlier Calculation Here ---
+    # For each video, compute outlier score as viewCount/channel_average using channel benchmark
+    # To avoid redundant calls, group by channel_id.
+    channel_benchmarks = {}
+    for r in results:
+        ch_id = r.get("channel_id")
+        if not ch_id:
+            r["outlier_score"] = 0
+            continue
+        try:
+            pub_date = datetime.strptime(r["published_at"], "%Y-%m-%dT%H:%M:%SZ").date()
+            video_age = (datetime.now().date() - pub_date).days
+        except Exception:
+            video_age = 0
+        # Use defaults: is_short_filter=None, percentile_range=50, num_videos=None (all videos)
+        if ch_id not in channel_benchmarks:
+            benchmark = compute_channel_benchmark(ch_id, video_age, None, 50, None)
+            channel_benchmarks[ch_id] = benchmark
+        benchmark_value = channel_benchmarks[ch_id]
+        if benchmark_value and benchmark_value > 0:
+            r["outlier_score"] = r["views"] / benchmark_value
+        else:
+            r["outlier_score"] = 0
+    # ---------------------------------------------
     set_cached_result(cache_key, results)
     if content_filter.lower() == "shorts":
         results = [x for x in results if x.get("content_category") == "Short"]
@@ -661,559 +691,20 @@ def search_youtube(query, channel_ids, timeframe, content_filter, ttl=600):
         results = [x for x in results if x.get("content_category") == "Video"]
     return results
 
-# =============================================================================
-# 9. Comments & Analysis
-# =============================================================================
-def analyze_comments(comments):
-    if "analysis_cache" not in st.session_state:
-        st.session_state["analysis_cache"] = {}
-    lines = [c["text"] for c in comments]
-    hashed = hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
-    if hashed in st.session_state["analysis_cache"]:
-        return st.session_state["analysis_cache"][hashed]
-    prompt_content = (
-        "Analyze the following YouTube comments and provide a short summary in three sections:\n"
-        "1) Positive Comments Summary\n"
-        "2) Negative Comments Summary\n"
-        "3) Top 5 Suggested Topics\n\n"
-        "Comments:\n" + "\n".join(lines)
-    )
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt_content}]
-        )
-        txt = response.choices[0].message.content
-        st.session_state["analysis_cache"][hashed] = txt
-        return txt
-    except:
-        return "Analysis failed."
+# --- Outlier Analysis Helper Functions (from provided code) ---
 
-def get_video_comments(video_id):
-    url = (
-        "https://www.googleapis.com/youtube/v3/commentThreads"
-        f"?part=snippet&videoId={video_id}&maxResults=50&order=relevance&key={get_youtube_api_key()}"
-    )
-    try:
-        resp = requests.get(url)
-        resp.raise_for_status()
-        data = resp.json()
-        comments = []
-        for item in data.get("items", []):
-            snippet = item["snippet"]["topLevelComment"]["snippet"]
-            text = snippet["textDisplay"]
-            like_count = int(snippet.get("likeCount", 0))
-            comments.append({"text": text, "likeCount": like_count})
-        return comments
-    except:
-        return []
-
-# =============================================================================
-# 10. Retention Analysis (Using Pillow)
-# =============================================================================
-def load_cookies(driver, cookie_file="youtube_cookies.json"):
-    if not os.path.exists(cookie_file):
-        return
-    with open(cookie_file, "r", encoding="utf-8") as f:
-        cookies = json.load(f)
-    for cookie in cookies:
-        cookie.pop("sameSite", None)
-        if "expiry" in cookie:
-            cookie["expires"] = cookie.pop("expiry")
-        driver.add_cookie(cookie)
-
-def capture_player_screenshot_with_hover(video_url, timestamp, output_path="player_retention.png", use_cookies=True):
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.binary_location = "/usr/bin/chromium"
-    driver_version = "120.0.6099.224"
-    service = Service(ChromeDriverManager(driver_version=driver_version).install())
-    driver = webdriver.Chrome(service=service, options=options)
-    try:
-        if use_cookies:
-            driver.get("https://youtube.com")
-            time.sleep(3)
-            load_cookies(driver, "youtube_cookies.json")
-            driver.refresh()
-            time.sleep(3)
-        driver.get(video_url)
-        time.sleep(5)
-        driver.execute_script(f"document.querySelector('video').currentTime = {timestamp};")
-        time.sleep(3)
-        player = driver.find_element(By.ID, "player")
-        progress_bar = player.find_element(By.XPATH, "//div[@class='ytp-progress-bar-padding']")
-        ActionChains(driver).move_to_element(progress_bar).perform()
-        time.sleep(2)
-        player.screenshot(output_path)
-        duration = driver.execute_script("return document.querySelector('video').duration")
-    finally:
-        driver.quit()
-    return duration
-
-def detect_retention_peaks(image_path, crop_ratio=0.2, height_threshold=200, distance=20, top_n=5):
-    if not os.path.exists(image_path):
-        raise FileNotFoundError(f"File {image_path} not found.")
-    try:
-        img_pil = Image.open(image_path).convert("RGB")
-    except Exception as e:
-        raise ValueError(f"Failed to read image from {image_path}: {e}")
-    img = np.array(img_pil)
-    height, width, _ = img.shape
-    roi = img[int(height * (1 - crop_ratio)):height, 0:width]
-    roi_gray = np.array(Image.fromarray(roi).convert("L"))
-    binary_roi = (roi_gray > 200).astype(np.uint8) * 255
-    col_sums = np.sum(binary_roi, axis=0)
-    peaks, properties = find_peaks(col_sums, height=height_threshold, distance=distance)
-    if len(peaks) > top_n:
-        peak_heights = properties["peak_heights"]
-        top_indices = np.argsort(peak_heights)[-top_n:]
-        top_peaks = peaks[top_indices]
-        top_peaks = np.sort(top_peaks)
-    else:
-        top_peaks = peaks
-    return top_peaks, roi, binary_roi, width, col_sums
-
-def capture_frame_at_time(video_url, target_time, output_path="frame_retention.png", use_cookies=True):
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.binary_location = "/usr/bin/chromium"
-    driver_version = "120.0.6099.224"
-    service = Service(ChromeDriverManager(driver_version=driver_version).install())
-    driver = webdriver.Chrome(service=service, options=options)
-    try:
-        if use_cookies:
-            driver.get("https://youtube.com")
-            time.sleep(3)
-            load_cookies(driver, "youtube_cookies.json")
-            driver.refresh()
-            time.sleep(3)
-        driver.get(video_url)
-        time.sleep(5)
-        driver.execute_script(f"document.querySelector('video').currentTime = {target_time};")
-        time.sleep(1)
-        driver.execute_script("document.querySelector('video').play();")
-        time.sleep(5)
-        driver.execute_script("document.querySelector('video').pause();")
-        time.sleep(1)
-        player = driver.find_element(By.ID, "player")
-        player.screenshot(output_path)
-    finally:
-        driver.quit()
-    return output_path
-
-def plot_brightness_profile(col_sums, peaks):
-    buf = BytesIO()
-    fig, ax = plt.subplots(figsize=(8, 3))
-    ax.plot(col_sums, label="Brightness Sum")
-    ax.plot(peaks, col_sums[peaks], "x", label="Detected Peaks", markersize=10, color="red")
-    ax.set_xlabel("Column Index (ROI)")
-    ax.set_ylabel("Sum of Pixel Values")
-    ax.legend()
-    plt.tight_layout()
-    plt.savefig(buf, format="png")
-    plt.close(fig)
-    buf.seek(0)
-    return buf
-
-def filter_transcript(transcript, target_time, window=5):
-    snippet = []
-    for seg in transcript:
-        start = seg.get("start", 0)
-        if abs(start - target_time) <= window:
-            snippet.append(seg.get("text", ""))
-    return " ".join(snippet)
-
-def check_ytdlp_installed():
-    try:
-        subprocess.run(["yt-dlp", "--version"], capture_output=True, check=True)
-        return True
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return False
-
-def download_video_snippet(video_url, start_time, duration=10, output_path="snippet.mp4"):
-    os.makedirs(os.path.dirname(os.path.abspath(output_path)) if os.path.dirname(output_path) else '.', exist_ok=True)
-    try:
-        temp_video = "temp_full_video.mp4"
-        download_cmd = [
-            "yt-dlp",
-            "-f", "best[height<=720]",
-            "--merge-output-format", "mp4",
-            "-o", temp_video,
-            video_url
-        ]
-        st.info("Downloading full video for extraction (this might take a moment)...", key="download_full_video")
-        subprocess.run(download_cmd, check=True, capture_output=True)
-        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-        st.info(f"Extracting {duration}s segment starting at {start_time}s...", key="extract_segment")
-        ffmpeg_cmd = [
-            ffmpeg_exe,
-            "-i", temp_video,
-            "-ss", str(start_time),
-            "-t", str(duration),
-            "-c:v", "libx264",
-            "-c:a", "aac",
-            "-strict", "experimental",
-            "-b:a", "128k",
-            "-y",
-            output_path
-        ]
-        subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
-        if os.path.exists(temp_video):
-            os.remove(temp_video)
-        return output_path
-    except subprocess.CalledProcessError as e:
-        st.error(f"Error during video processing: {e.stdout}\n{e.stderr}", key="snippet_error")
-        raise Exception(f"Failed to extract video segment: {str(e)}")
-
-# =============================================================================
-# 14. UI Pages
-# =============================================================================
-def show_search_page():
-    st.title("Youtube Niche Search")
-    with st.sidebar.expander("Channel Folder Manager"):
-        show_channel_folder_manager()
-    folders = load_channel_folders()
-    folder_choice = st.sidebar.selectbox("Select Folder", list(folders.keys()) if folders else ["None"])
-    selected_timeframe = st.sidebar.selectbox(
-        "Timeframe",
-        ["Last 24 hours", "Last 48 hours", "Last 4 days", "Last 7 days", "Last 15 days", "Last 28 days", "3 months", "Lifetime"]
-    )
-    content_filter = st.sidebar.selectbox("Filter By Content Type", ["Shorts", "Videos", "Both"], index=2)
-    min_outlier_score = st.sidebar.number_input("Minimum Outlier Score", value=0.0, step=0.1, format="%.2f")
-    search_query = st.sidebar.text_input("Keyword (optional)", "")
-    
-    selected_channel_ids = []
-    if folder_choice != "None":
-        for ch in folders[folder_choice]:
-            selected_channel_ids.append(ch["channel_id"])
-
-    st.write(f"**Selected Folder**: {folder_choice}")
-    if folder_choice != "None":
-        with st.expander("Channels in this folder", expanded=False):
-            if folders[folder_choice]:
-                for ch in folders[folder_choice]:
-                    st.write(f"- {ch['channel_name']}")
-            else:
-                st.write("(No channels)")
-    
-    if st.sidebar.button("Clear Cache (force new)"):
-        with sqlite3.connect(DB_PATH) as c:
-            c.execute("DELETE FROM youtube_cache")
-        st.sidebar.success("Cache cleared. Next search is fresh.")
-
-    if st.sidebar.button("Search"):
-        if folder_choice == "None" or not selected_channel_ids:
-            st.error("No folder or channels selected. Please select a folder with at least one channel.")
-        else:
-            results = search_youtube(search_query, selected_channel_ids, selected_timeframe, content_filter, ttl=600)
-            if min_outlier_score > 0:
-                results = [r for r in results if r.get("outlier_score", 0) >= min_outlier_score]
-            st.session_state.search_results = results
-            st.session_state.page = "search"
-
-    if "search_results" in st.session_state and st.session_state.search_results:
-        data = st.session_state.search_results
-        sort_options = [
-            "views",
-            "upload_date",
-            "outlier_score",
-            "outlier_cvr",
-            "outlier_clr",
-            "comment_to_view_ratio",
-            "comment_to_like_ratio",
-            "comment_count"
-        ]
-        sort_by = st.selectbox("Sort by:", sort_options, index=0)
-
-        def parse_sort_value(item):
-            if sort_by == "upload_date":
-                try:
-                    return datetime.strptime(item["published_at"], "%Y-%m-%dT%H:%M:%SZ")
-                except:
-                    return datetime.min
-            val = item.get(sort_by, 0)
-            if sort_by in ("comment_to_view_ratio", "comment_to_like_ratio"):
-                return float(val.replace("%", "")) if "%" in val else 0.0
-            return float(val) if isinstance(val, (int, float, str)) else 0.0
-
-        sorted_data = sorted(data, key=parse_sort_value, reverse=True)
-        st.subheader(f"Found {len(sorted_data)} results (sorted by {sort_by})")
-
-        for i in range(0, len(sorted_data), 3):
-            row_chunk = sorted_data[i:i+3]
-            cols = st.columns(3)
-            for j in range(3):
-                with cols[j]:
-                    if j < len(row_chunk):
-                        row = row_chunk[j]
-                        days_ago = int(round(row.get("days_since_published", 0)))
-                        days_ago_text = "today" if days_ago == 0 else f"{days_ago} days ago"
-                        outlier_val = f"{row.get('outlier_score', 0):.2f}x"
-                        outlier_html = f"""
-                        <span style="
-                            background-color:#4285f4;
-                            color:white;
-                            padding:3px 8px;
-                            border-radius:12px;
-                            font-size:0.95rem;
-                            font-weight:bold;">
-                            {outlier_val}
-                        </span>
-                        """
-                        watch_url = f"https://www.youtube.com/watch?v={row['video_id']}"
-                        container_html = f"""
-                        <div style="
-                            border: 1px solid #CCC;
-                            border-radius: 6px;
-                            padding: 12px;
-                            height: 400px;
-                            overflow: hidden;
-                            display: flex;
-                            flex-direction: column;
-                            justify-content: flex-start;
-                            margin-bottom: 1rem;
-                        ">
-                          <a href="{watch_url}" target="_blank">
-                            <img src="{row['thumbnail']}" style="width:100%; border-radius:4px; margin-bottom:0.5rem;" />
-                          </a>
-                          <div style="font-weight:bold; font-size:1rem; text-align:left; margin-bottom:0.3rem;">
-                            {row['title']}
-                          </div>
-                          <div style="font-size:0.9rem; text-align:left; margin-bottom:0.5rem; color:#555;">
-                            {row['channel_name']}
-                          </div>
-                          <div style="display:flex; justify-content:space-between; margin-bottom:0.3rem;">
-                            <span style="font-weight:bold; color:#FFA500; font-size:0.95rem;">
-                              {row['formatted_views']} views
-                            </span>
-                            {outlier_html}
-                          </div>
-                          <div style="display:flex; justify-content:space-between; margin-bottom:0.3rem;">
-                            <span style="font-size:0.85rem;">
-                              {row.get('vph_display', '0 VPH')}
-                            </span>
-                            <span style="font-size:0.85rem;">
-                              Published {days_ago_text}
-                            </span>
-                          </div>
-                        </div>
-                        """
-                        st.markdown(container_html, unsafe_allow_html=True)
-                        if st.checkbox("View more analytics", key=f"toggle_{row['video_id']}"):
-                            st.write(f"**Channel**: {row['channel_name']}")
-                            st.write(f"**Category**: {row['content_category']}")
-                            st.write(f"**Comments**: {row['comment_count']}")
-                            st.markdown(f"**C/V Ratio**: {row['comment_to_view_ratio']} (Outlier: {row.get('outlier_cvr', 0):.2f})")
-                            st.markdown(f"**C/L Ratio**: {row['comment_to_like_ratio']} (Outlier: {row.get('outlier_clr', 0):.2f})")
-                            if st.button("View Details", key=f"view_{row['video_id']}"):
-                                st.session_state.selected_video_id = row["video_id"]
-                                st.session_state.selected_video_title = row["title"]
-                                st.session_state.selected_video_duration = row["duration_seconds"]
-                                st.session_state.selected_video_publish_at = row["published_at"]
-                                st.session_state.page = "details"
-                                st.stop()
-                    else:
-                        st.empty()
-
-def show_details_page():
-    video_id = st.session_state.get("selected_video_id")
-    video_title = st.session_state.get("selected_video_title")
-    total_duration = st.session_state.get("selected_video_duration", 0)
-    published_at = st.session_state.get("selected_video_publish_at")
-
-    if not video_id or not video_title:
-        st.write("No video selected. Please go back to Search.")
-        if st.button("Back to Search", key="details_back"):
-            st.session_state.page = "search"
-            st.stop()
-        return
-
-    st.title(f"Details for: {video_title}")
-    video_url = f"https://www.youtube.com/watch?v={video_id}"
-
-    st.subheader("Comments")
-    comments_key = f"comments_{video_id}"
-    if comments_key not in st.session_state:
-        st.session_state[comments_key] = get_video_comments(video_id)
-    comments = st.session_state[comments_key]
-    if comments:
-        st.write(f"Total Comments Fetched: {len(comments)}")
-        top_5 = sorted(comments, key=lambda c: c["likeCount"], reverse=True)[:5]
-        st.write("**Top 5 Comments (by Likes):**")
-        for c in top_5:
-            st.markdown(f"**{c['likeCount']} likes** - {c['text']}", unsafe_allow_html=True)
-        with st.spinner("Analyzing comments with GPT..."):
-            analysis = analyze_comments(comments)
-        st.write("**Comments Analysis (Positive, Negative, Suggested Topics):**")
-        st.write(analysis)
-    else:
-        st.write("No comments available for this video.")
-
-    st.subheader("Script")
-    transcript, source = get_transcript_with_fallback(video_id)
-    is_short = ("shorts" in video_url.lower()) or (total_duration < 60)
-    if is_short:
-        if transcript:
-            script_text = " ".join([seg["text"] for seg in transcript])
-            st.markdown("**Full Script:**")
-            st.write(script_text)
-            with st.spinner("Summarizing short's script with GPT..."):
-                short_summary = summarize_script(script_text)
-            st.subheader("Script Summary")
-            st.write(short_summary)
-        else:
-            st.info("Transcript unavailable for this short.")
-    else:
-        with st.spinner("Fetching intro & outro script..."):
-            intro_txt, outro_txt = get_intro_outro_transcript(video_id, total_duration)
-        st.markdown("**Intro Script (First 1 minute):**")
-        st.write(intro_txt if intro_txt else "*No intro script available.*")
-        st.markdown("**Outro Script (Last 1 minute):**")
-        st.write(outro_txt if (outro_txt and total_duration > 120) else "*No outro script available or video is too short.*")
-        with st.spinner("Summarizing intro & outro script with GPT..."):
-            intro_summary, outro_summary = summarize_intro_outro(intro_txt or "", outro_txt or "")
-        st.subheader("Intro & Outro Summaries")
-        st.write(intro_summary if intro_summary else "*No summary available.*")
-
-    st.subheader("Retention Analysis")
-    if is_short:
-        st.info("Retention analysis is available only for full-length videos. This appears to be a short video.")
-    else:
-        if published_at:
-            try:
-                published_dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                if (datetime.now(timezone.utc) - published_dt) < timedelta(days=3):
-                    st.info("Retention analysis is available only for videos posted at least 3 days ago.")
-                else:
-                    if st.button("Run Retention Analysis"):
-                        try:
-                            base_timestamp = total_duration if total_duration and total_duration > 0 else 120
-                            st.info(f"Using base timestamp: {base_timestamp:.2f} sec (from video duration)")
-                            snippet_duration = st.number_input("Snippet Duration for Peaks (sec):", value=5, min_value=3, max_value=30, step=1)
-                            with st.spinner("Capturing retention screenshot..."):
-                                screenshot_path = "player_retention.png"
-                                duration = capture_player_screenshot_with_hover(video_url, timestamp=base_timestamp, output_path=screenshot_path, use_cookies=True)
-                            if os.path.exists(screenshot_path):
-                                st.image(screenshot_path, caption="Player Screenshot for Retention Analysis")
-                            else:
-                                st.error("Retention screenshot not found.")
-                                return
-                            with st.spinner("Analyzing retention peaks..."):
-                                peaks, roi, binary_roi, roi_width, col_sums = detect_retention_peaks(
-                                    screenshot_path, crop_ratio=0.2, height_threshold=200, distance=20, top_n=5
-                                )
-                            st.write(f"Detected {len(peaks)} retention peak(s): {peaks}")
-                            buf = plot_brightness_profile(col_sums, peaks)
-                            st.image(buf, caption="Brightness Profile with Detected Peaks")
-                            for idx, peak_x in enumerate(peaks):
-                                peak_time = (peak_x / roi_width) * duration
-                                st.markdown(f"**Retention Peak {idx+1} at {peak_time:.2f} sec**")
-                                peak_frame_path = f"peak_frame_retention_{idx+1}.png"
-                                with st.spinner(f"Capturing frame for retention peak {idx+1}..."):
-                                    capture_frame_at_time(video_url, target_time=peak_time, output_path=peak_frame_path, use_cookies=True)
-                                if os.path.exists(peak_frame_path):
-                                    st.image(peak_frame_path, caption=f"Frame at {peak_time:.2f} sec")
-                                else:
-                                    st.error(f"Failed to capture frame for retention peak {idx+1}")
-                                if check_ytdlp_installed():
-                                    adjusted_start_time = max(0, peak_time - snippet_duration / 2)
-                                    snippet_path = f"peak_snippet_{idx+1}.mp4"
-                                    with st.spinner(f"Downloading video snippet for retention peak {idx+1}..."):
-                                        download_video_snippet(video_url, start_time=adjusted_start_time, duration=snippet_duration, output_path=snippet_path)
-                                    if os.path.exists(snippet_path) and os.path.getsize(snippet_path) > 0:
-                                        st.write(f"Video Snippet for Peak {idx+1} (±{snippet_duration/2} sec)")
-                                        st.video(snippet_path)
-                                    else:
-                                        st.error(f"Video snippet download failed for retention peak {idx+1}.")
-                                else:
-                                    st.error("yt-dlp is not installed. Cannot download video snippet.")
-                                if transcript:
-                                    snippet_text = filter_transcript(transcript, target_time=peak_time, window=5)
-                                    if snippet_text:
-                                        st.markdown(f"**Transcript Snippet:** {snippet_text}")
-                                    else:
-                                        st.write("No transcript snippet found for this peak.")
-                        except Exception as e:
-                            st.error(f"Error during retention analysis: {e}")
-            except Exception as e:
-                logger.error(f"Error parsing published_at: {e}")
-        else:
-            st.info("No published date available; cannot determine retention analysis eligibility.")
-    if st.button("Back to Search", key="details_back_button"):
-        st.session_state.page = "search"
-        st.stop()
-
-# =============================================================================
-# 15. Outlier Analysis Functions (from provided code)
-# =============================================================================
-# URL Parsing for Outlier Analysis
-def extract_channel_id(url):
-    patterns = [
-        r'youtube\.com/channel/([^/\s?]+)',
-        r'youtube\.com/c/([^/\s?]+)',
-        r'youtube\.com/user/([^/\s?]+)',
-        r'youtube\.com/@([^/\s?]+)'
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            identifier = match.group(1)
-            if pattern == patterns[0] and identifier.startswith('UC'):
-                return identifier
-            return get_channel_id_from_identifier(identifier, pattern)
-    if url.strip().startswith('UC'):
-        return url.strip()
-    return None
-
-def extract_video_id(url):
-    patterns = [
-        r'youtube\.com/watch\?v=([^&\s]+)',
-        r'youtu\.be/([^?\s]+)',
-        r'youtube\.com/embed/([^?\s]+)',
-        r'youtube\.com/v/([^?\s]+)',
-        r'youtube\.com/shorts/([^?\s]+)'
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    if re.match(r'^[A-Za-z0-9_-]{11}$', url.strip()):
-        return url.strip()
-    return None
-
-def get_channel_id_from_identifier(identifier, pattern_used):
-    try:
-        if pattern_used == r'youtube\.com/channel/([^/\s?]+)':
-            return identifier
-        elif pattern_used == r'youtube\.com/c/([^/\s?]+)':
-            search_url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&q={identifier}&key={YOUTUBE_API_KEY}"
-        elif pattern_used == r'youtube\.com/user/([^/\s?]+)':
-            username_url = f"https://www.googleapis.com/youtube/v3/channels?part=id&forUsername={identifier}&key={YOUTUBE_API_KEY}"
-            username_res = requests.get(username_url).json()
-            if 'items' in username_res and username_res['items']:
-                return username_res['items'][0]['id']
-            search_url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&q={identifier}&key={YOUTUBE_API_KEY}"
-        elif pattern_used == r'youtube\.com/@([^/\s?]+)':
-            if identifier.startswith('@'):
-                identifier = identifier[1:]
-            search_url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&q={identifier}&key={YOUTUBE_API_KEY}"
-        else:
-            search_url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&q={identifier}&key={YOUTUBE_API_KEY}"
-        if 'search_url' in locals():
-            search_res = requests.get(search_url).json()
-            if 'items' in search_res and search_res['items']:
-                return search_res['items'][0]['id']['channelId']
-    except Exception as e:
-        st.error(f"Error resolving channel identifier: {e}")
-    return None
+def parse_duration(duration_str):
+    hours = re.search(r'(\d+)H', duration_str)
+    minutes = re.search(r'(\d+)M', duration_str)
+    seconds = re.search(r'(\d+)S', duration_str)
+    total_seconds = 0
+    if hours:
+        total_seconds += int(hours.group(1)) * 3600
+    if minutes:
+        total_seconds += int(minutes.group(1)) * 60
+    if seconds:
+        total_seconds += int(seconds.group(1))
+    return total_seconds
 
 def fetch_single_video_outlier(video_id, api_key):
     video_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id={video_id}&key={api_key}"
@@ -1303,19 +794,6 @@ def fetch_video_details_outlier(video_ids, api_key):
         except Exception as e:
             st.warning(f"Error fetching details for some videos: {e}")
     return all_details
-
-def parse_duration(duration_str):
-    hours = re.search(r'(\d+)H', duration_str)
-    minutes = re.search(r'(\d+)M', duration_str)
-    seconds = re.search(r'(\d+)S', duration_str)
-    total_seconds = 0
-    if hours:
-        total_seconds += int(hours.group(1)) * 3600
-    if minutes:
-        total_seconds += int(minutes.group(1)) * 60
-    if seconds:
-        total_seconds += int(seconds.group(1))
-    return total_seconds
 
 def generate_historical_data(video_details, max_days, is_short=None):
     today = datetime.now().date()
@@ -1469,11 +947,301 @@ def simulate_video_performance(video_data, benchmark_data):
         })
     return pd.DataFrame(data)
 
+# --- Helper function to compute channel benchmark for outlier score ---
+def compute_channel_benchmark(channel_id, video_age, is_short_filter, percentile_range, num_videos):
+    channel_videos, channel_name, channel_stats = fetch_channel_videos_outlier(channel_id, num_videos, YOUTUBE_API_KEY)
+    if not channel_videos:
+        return None
+    video_ids = [v['videoId'] for v in channel_videos]
+    detailed_videos = fetch_video_details_outlier(video_ids, YOUTUBE_API_KEY)
+    benchmark_df = generate_historical_data(detailed_videos, video_age, is_short_filter)
+    if benchmark_df.empty:
+        return None
+    benchmark_stats = calculate_benchmark(benchmark_df, percentile_range)
+    day_index = min(video_age, len(benchmark_stats)-1)
+    if day_index < 0:
+        day_index = 0
+    channel_average = benchmark_stats.loc[day_index, 'channel_average']
+    return channel_average
+
 # =============================================================================
-# 16. Outlier Analysis Page
+# 14. UI Pages – Search, Details, Outlier Analysis
 # =============================================================================
+def show_search_page():
+    st.title("Youtube Niche Search")
+    with st.sidebar.expander("Channel Folder Manager"):
+        show_channel_folder_manager()
+    folders = load_channel_folders()
+    folder_choice = st.sidebar.selectbox("Select Folder", list(folders.keys()) if folders else ["None"])
+    selected_timeframe = st.sidebar.selectbox(
+        "Timeframe",
+        ["Last 24 hours", "Last 48 hours", "Last 4 days", "Last 7 days", "Last 15 days", "Last 28 days", "3 months", "Lifetime"]
+    )
+    content_filter = st.sidebar.selectbox("Filter By Content Type", ["Shorts", "Videos", "Both"], index=2)
+    min_outlier_score = st.sidebar.number_input("Minimum Outlier Score", value=0.0, step=0.1, format="%.2f")
+    search_query = st.sidebar.text_input("Keyword (optional)", "")
+    
+    selected_channel_ids = []
+    if folder_choice != "None":
+        for ch in folders[folder_choice]:
+            selected_channel_ids.append(ch["channel_id"])
+
+    st.write(f"**Selected Folder**: {folder_choice}")
+    if folder_choice != "None":
+        with st.expander("Channels in this folder", expanded=False):
+            if folders[folder_choice]:
+                for ch in folders[folder_choice]:
+                    st.write(f"- {ch['channel_name']}")
+            else:
+                st.write("(No channels)")
+    
+    if st.sidebar.button("Clear Cache (force new)"):
+        with sqlite3.connect(DB_PATH) as c:
+            c.execute("DELETE FROM youtube_cache")
+        st.sidebar.success("Cache cleared. Next search is fresh.")
+
+    if st.sidebar.button("Search"):
+        if folder_choice == "None" or not selected_channel_ids:
+            st.error("No folder or channels selected. Please select a folder with at least one channel.")
+        else:
+            results = search_youtube(search_query, selected_channel_ids, selected_timeframe, content_filter, ttl=600)
+            if min_outlier_score > 0:
+                results = [r for r in results if r.get("outlier_score", 0) >= min_outlier_score]
+            st.session_state.search_results = results
+            st.session_state.page = "search"
+
+    if "search_results" in st.session_state and st.session_state.search_results:
+        data = st.session_state.search_results
+        sort_options = [
+            "views",
+            "upload_date",
+            "outlier_score",
+            "comment_to_view_ratio",
+            "comment_to_like_ratio",
+            "comment_count"
+        ]
+        sort_by = st.selectbox("Sort by:", sort_options, index=0)
+
+        def parse_sort_value(item):
+            if sort_by == "upload_date":
+                try:
+                    return datetime.strptime(item["published_at"], "%Y-%m-%dT%H:%M:%SZ")
+                except:
+                    return datetime.min
+            val = item.get(sort_by, 0)
+            if sort_by in ("comment_to_view_ratio", "comment_to_like_ratio"):
+                return float(val.replace("%", "")) if "%" in val else 0.0
+            return float(val) if isinstance(val, (int, float, str)) else 0.0
+
+        sorted_data = sorted(data, key=parse_sort_value, reverse=True)
+        st.subheader(f"Found {len(sorted_data)} results (sorted by {sort_by})")
+
+        for i in range(0, len(sorted_data), 3):
+            row_chunk = sorted_data[i:i+3]
+            cols = st.columns(3)
+            for j in range(3):
+                with cols[j]:
+                    if j < len(row_chunk):
+                        row = row_chunk[j]
+                        days_ago = int(round(row.get("days_since_published", 0)))
+                        days_ago_text = "today" if days_ago == 0 else f"{days_ago} days ago"
+                        outlier_val = f"{row.get('outlier_score', 0):.2f}x"
+                        outlier_html = f"""
+                        <span style="
+                            background-color:#4285f4;
+                            color:white;
+                            padding:3px 8px;
+                            border-radius:12px;
+                            font-size:0.95rem;
+                            font-weight:bold;">
+                            {outlier_val}
+                        </span>
+                        """
+                        watch_url = f"https://www.youtube.com/watch?v={row['video_id']}"
+                        container_html = f"""
+                        <div style="
+                            border: 1px solid #CCC;
+                            border-radius: 6px;
+                            padding: 12px;
+                            height: 400px;
+                            overflow: hidden;
+                            display: flex;
+                            flex-direction: column;
+                            justify-content: flex-start;
+                            margin-bottom: 1rem;
+                        ">
+                          <a href="{watch_url}" target="_blank">
+                            <img src="{row['thumbnail']}" style="width:100%; border-radius:4px; margin-bottom:0.5rem;" />
+                          </a>
+                          <div style="font-weight:bold; font-size:1rem; text-align:left; margin-bottom:0.3rem;">
+                            {row['title']}
+                          </div>
+                          <div style="font-size:0.9rem; text-align:left; margin-bottom:0.5rem; color:#555;">
+                            {row['channel_name']}
+                          </div>
+                          <div style="display:flex; justify-content:space-between; margin-bottom:0.3rem;">
+                            <span style="font-weight:bold; color:#FFA500; font-size:0.95rem;">
+                              {row['formatted_views']} views
+                            </span>
+                            {outlier_html}
+                          </div>
+                          <div style="display:flex; justify-content:space-between; margin-bottom:0.3rem;">
+                            <span style="font-size:0.85rem;">
+                              {row.get('vph_display', '0 VPH')}
+                            </span>
+                            <span style="font-size:0.85rem;">
+                              Published {days_ago_text}
+                            </span>
+                          </div>
+                        </div>
+                        """
+                        st.markdown(container_html, unsafe_allow_html=True)
+                        if st.checkbox("View more analytics", key=f"toggle_{row['video_id']}"):
+                            st.write(f"**Channel:** {row['channel_name']}")
+                            st.write(f"**Category:** {row['content_category']}")
+                            st.write(f"**Comments:** {row['comment_count']}")
+                            st.markdown(f"**C/V Ratio:** {row['comment_to_view_ratio']}")
+                            st.markdown(f"**C/L Ratio:** {row['comment_to_like_ratio']}")
+                            if st.button("View Details", key=f"view_{row['video_id']}"):
+                                st.session_state.selected_video_id = row["video_id"]
+                                st.session_state.selected_video_title = row["title"]
+                                st.session_state.selected_video_duration = row["duration_seconds"]
+                                st.session_state.selected_video_publish_at = row["published_at"]
+                                st.session_state.page = "details"
+                                st.stop()
+                    else:
+                        st.empty()
+
+def show_details_page():
+    video_id = st.session_state.get("selected_video_id")
+    video_title = st.session_state.get("selected_video_title")
+    total_duration = st.session_state.get("selected_video_duration", 0)
+    published_at = st.session_state.get("selected_video_publish_at")
+
+    if not video_id or not video_title:
+        st.write("No video selected. Please go back to Search.")
+        if st.button("Back to Search", key="details_back"):
+            st.session_state.page = "search"
+            st.stop()
+        return
+
+    st.title(f"Details for: {video_title}")
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    st.subheader("Comments")
+    comments_key = f"comments_{video_id}"
+    if comments_key not in st.session_state:
+        st.session_state[comments_key] = get_video_comments(video_id)
+    comments = st.session_state[comments_key]
+    if comments:
+        st.write(f"Total Comments Fetched: {len(comments)}")
+        top_5 = sorted(comments, key=lambda c: c["likeCount"], reverse=True)[:5]
+        st.write("**Top 5 Comments (by Likes):**")
+        for c in top_5:
+            st.markdown(f"**{c['likeCount']} likes** - {c['text']}", unsafe_allow_html=True)
+        with st.spinner("Analyzing comments with GPT..."):
+            analysis = analyze_comments(comments)
+        st.write("**Comments Analysis (Positive, Negative, Suggested Topics):**")
+        st.write(analysis)
+    else:
+        st.write("No comments available for this video.")
+
+    st.subheader("Script")
+    transcript, source = get_transcript_with_fallback(video_id)
+    is_short = ("shorts" in video_url.lower()) or (total_duration < 60)
+    if is_short:
+        if transcript:
+            script_text = " ".join([seg["text"] for seg in transcript])
+            st.markdown("**Full Script:**")
+            st.write(script_text)
+            with st.spinner("Summarizing short's script with GPT..."):
+                short_summary = summarize_script(script_text)
+            st.subheader("Script Summary")
+            st.write(short_summary)
+        else:
+            st.info("Transcript unavailable for this short.")
+    else:
+        with st.spinner("Fetching intro & outro script..."):
+            intro_txt, outro_txt = get_intro_outro_transcript(video_id, total_duration)
+        st.markdown("**Intro Script (First 1 minute):**")
+        st.write(intro_txt if intro_txt else "*No intro script available.*")
+        st.markdown("**Outro Script (Last 1 minute):**")
+        st.write(outro_txt if (outro_txt and total_duration > 120) else "*No outro script available or video is too short.*")
+        with st.spinner("Summarizing intro & outro script with GPT..."):
+            intro_summary, outro_summary = summarize_intro_outro(intro_txt or "", outro_txt or "")
+        st.subheader("Intro & Outro Summaries")
+        st.write(intro_summary if intro_summary else "*No summary available.*")
+
+    st.subheader("Retention Analysis")
+    if is_short:
+        st.info("Retention analysis is available only for full-length videos. This appears to be a short video.")
+    else:
+        if published_at:
+            try:
+                published_dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                if (datetime.now(timezone.utc) - published_dt) < timedelta(days=3):
+                    st.info("Retention analysis is available only for videos posted at least 3 days ago.")
+                else:
+                    if st.button("Run Retention Analysis"):
+                        try:
+                            base_timestamp = total_duration if total_duration and total_duration > 0 else 120
+                            st.info(f"Using base timestamp: {base_timestamp:.2f} sec (from video duration)")
+                            snippet_duration = st.number_input("Snippet Duration for Peaks (sec):", value=5, min_value=3, max_value=30, step=1)
+                            with st.spinner("Capturing retention screenshot..."):
+                                screenshot_path = "player_retention.png"
+                                duration = capture_player_screenshot_with_hover(video_url, timestamp=base_timestamp, output_path=screenshot_path, use_cookies=True)
+                            if os.path.exists(screenshot_path):
+                                st.image(screenshot_path, caption="Player Screenshot for Retention Analysis")
+                            else:
+                                st.error("Retention screenshot not found.")
+                                return
+                            with st.spinner("Analyzing retention peaks..."):
+                                peaks, roi, binary_roi, roi_width, col_sums = detect_retention_peaks(
+                                    screenshot_path, crop_ratio=0.2, height_threshold=200, distance=20, top_n=5
+                                )
+                            st.write(f"Detected {len(peaks)} retention peak(s): {peaks}")
+                            buf = plot_brightness_profile(col_sums, peaks)
+                            st.image(buf, caption="Brightness Profile with Detected Peaks")
+                            for idx, peak_x in enumerate(peaks):
+                                peak_time = (peak_x / roi_width) * duration
+                                st.markdown(f"**Retention Peak {idx+1} at {peak_time:.2f} sec**")
+                                peak_frame_path = f"peak_frame_retention_{idx+1}.png"
+                                with st.spinner(f"Capturing frame for retention peak {idx+1}..."):
+                                    capture_frame_at_time(video_url, target_time=peak_time, output_path=peak_frame_path, use_cookies=True)
+                                if os.path.exists(peak_frame_path):
+                                    st.image(peak_frame_path, caption=f"Frame at {peak_time:.2f} sec")
+                                else:
+                                    st.error(f"Failed to capture frame for retention peak {idx+1}")
+                                if check_ytdlp_installed():
+                                    adjusted_start_time = max(0, peak_time - snippet_duration / 2)
+                                    snippet_path = f"peak_snippet_{idx+1}.mp4"
+                                    with st.spinner(f"Downloading video snippet for retention peak {idx+1}..."):
+                                        download_video_snippet(video_url, start_time=adjusted_start_time, duration=snippet_duration, output_path=snippet_path)
+                                    if os.path.exists(snippet_path) and os.path.getsize(snippet_path) > 0:
+                                        st.write(f"Video Snippet for Peak {idx+1} (±{snippet_duration/2} sec)")
+                                        st.video(snippet_path)
+                                    else:
+                                        st.error(f"Video snippet download failed for retention peak {idx+1}.")
+                                else:
+                                    st.error("yt-dlp is not installed. Cannot download video snippet.")
+                                if transcript:
+                                    snippet_text = filter_transcript(transcript, target_time=peak_time, window=5)
+                                    if snippet_text:
+                                        st.markdown(f"**Transcript Snippet:** {snippet_text}")
+                                    else:
+                                        st.write("No transcript snippet found for this peak.")
+                        except Exception as e:
+                            st.error(f"Error during retention analysis: {e}")
+            except Exception as e:
+                logger.error(f"Error parsing published_at: {e}")
+        else:
+            st.info("No published date available; cannot determine retention analysis eligibility.")
+    if st.button("Back to Search", key="details_back_button"):
+        st.session_state.page = "search"
+        st.stop()
+
 def show_outlier_analysis_page():
-    st.set_page_config(page_title="YouTube Video Outlier Analysis", page_icon="📊", layout="wide")
+    # This page essentially replicates the outlier analysis process from the provided code.
     st.markdown("""
     <style>
         .main-header {
@@ -1512,7 +1280,6 @@ def show_outlier_analysis_page():
     st.markdown("<div class='main-header'>YouTube Video Outlier Analysis</div>", unsafe_allow_html=True)
     st.markdown("Find out if your video is an outlier compared to the channel's average performance")
     
-    # Sidebar settings – include all videos by default
     with st.sidebar:
         st.header("Settings")
         include_all = st.checkbox("Include all videos", value=True)
@@ -1535,7 +1302,7 @@ def show_outlier_analysis_page():
                     "Long-form Only" if x == "long_form" else "Auto-detect (match video type)"
                 )
             ),
-            index=0  # default to all videos
+            index=0
         )
         percentile_range = st.slider(
             "Middle Percentage Range for Band",
@@ -1701,15 +1468,14 @@ def show_outlier_analysis_page():
                 if benchmark_lower > 0:
                     vs_lower_pct = ((video_details['viewCount'] / benchmark_lower) - 1) * 100
                     st.metric("Compared to Lower Band", f"{vs_lower_pct:+.1f}%")
+
 # =============================================================================
 # Main Navigation
 # =============================================================================
 def main():
     init_db(DB_PATH)
     if "page" not in st.session_state:
-        # Default to Outlier Analysis page (or choose between "Search" and "Outlier Analysis")
-        st.session_state.page = "outlier"
-    page = st.session_state.get("page")
+        st.session_state.page = "outlier_analysis"
     nav = st.sidebar.radio("Navigation", ["Search", "Outlier Analysis"], index=1)
     st.session_state.page = nav.lower().replace(" ", "_")
     if st.session_state.page == "search":
