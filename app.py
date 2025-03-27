@@ -43,6 +43,14 @@ def setup_logger():
     file_handler = RotatingFileHandler(log_file, maxBytes=1024*1024, backupCount=5)
     file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
+    logger = logging.getLogger()
+    logger.setLevel(logging.WARNING)
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
+    return logger
+
+logger = setup_logger()
     # Add this at the beginning of the file, right after the other imports
 
 # Handle CV2 dependency
@@ -67,14 +75,6 @@ except ModuleNotFoundError:
             def __getattr__(self, name):
                 return lambda *args, **kwargs: None
         cv2 = CV2Placeholder()
-    stream_handler.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
-    logger = logging.getLogger()
-    logger.setLevel(logging.WARNING)
-    logger.addHandler(file_handler)
-    logger.addHandler(stream_handler)
-    return logger
-
-logger = setup_logger()
 
 # =============================================================================
 # 2. API Keys from Streamlit Secrets (single key, no proxies)
