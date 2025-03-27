@@ -1,6 +1,5 @@
 streamlit
-selenium
-webdriver-manager
+opencv-python
 numpy
 matplotlib
 scipy
@@ -8,5 +7,8 @@ requests
 openai
 pandas
 isodate
+selenium
+webdriver-manager
+imageio-ffmpeg
 youtube-transcript-api
-plotly
+yt-dlp
