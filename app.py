@@ -1,7 +1,6 @@
 import os
 import time
 import json
-import cv2
 import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -22,6 +21,9 @@ import tempfile
 import shutil
 import pandas as pd
 import isodate
+
+# PIL is used instead of OpenCV for image processing.
+from PIL import Image
 
 # Selenium & related imports
 from selenium import webdriver
@@ -763,13 +765,18 @@ def capture_player_screenshot_with_hover(video_url, timestamp, output_path="play
 def detect_retention_peaks(image_path, crop_ratio=0.2, height_threshold=200, distance=20, top_n=5):
     if not os.path.exists(image_path):
         raise FileNotFoundError(f"File {image_path} not found.")
-    img = cv2.imread(image_path)
-    if img is None:
-        raise ValueError(f"Failed to read image from {image_path}.")
+    # Load image using Pillow
+    try:
+        img_pil = Image.open(image_path).convert("RGB")
+    except Exception as e:
+        raise ValueError(f"Failed to read image from {image_path}: {e}")
+    img = np.array(img_pil)
     height, width, _ = img.shape
     roi = img[int(height * (1 - crop_ratio)):height, 0:width]
-    gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    _, binary_roi = cv2.threshold(gray_roi, 200, 255, cv2.THRESH_BINARY)
+    # Convert ROI to grayscale using Pillow
+    roi_gray = np.array(Image.fromarray(roi).convert("L"))
+    # Apply threshold to create a binary image (simulate cv2.threshold)
+    binary_roi = (roi_gray > 200).astype(np.uint8) * 255
     col_sums = np.sum(binary_roi, axis=0)
     peaks, properties = find_peaks(col_sums, height=height_threshold, distance=distance)
     if len(peaks) > top_n:
@@ -964,7 +971,7 @@ def show_search_page():
                         row = row_chunk[j]
                         days_ago = int(round(row.get("days_since_published", 0)))
                         days_ago_text = "today" if days_ago == 0 else f"{days_ago} days ago"
-                        outlier_val = f"{row['outlier_score']:.2f}x"
+                        outlier_val = f"{row.get('outlier_score', 0):.2f}x"
                         outlier_html = f"""
                         <span style="
                             background-color:#4285f4;
@@ -1019,8 +1026,8 @@ def show_search_page():
                             st.write(f"**Channel**: {row['channel_name']}")
                             st.write(f"**Category**: {row['content_category']}")
                             st.write(f"**Comments**: {row['comment_count']}")
-                            st.markdown(f"**C/V Ratio**: {row['comment_to_view_ratio']} (Outlier: {row['outlier_cvr']:.2f})")
-                            st.markdown(f"**C/L Ratio**: {row['comment_to_like_ratio']} (Outlier: {row['outlier_clr']:.2f})")
+                            st.markdown(f"**C/V Ratio**: {row['comment_to_view_ratio']} (Outlier: {row.get('outlier_cvr', 0):.2f})")
+                            st.markdown(f"**C/L Ratio**: {row['comment_to_like_ratio']} (Outlier: {row.get('outlier_clr', 0):.2f})")
                             if st.button("View Details", key=f"view_{row['video_id']}"):
                                 st.session_state.selected_video_id = row["video_id"]
                                 st.session_state.selected_video_title = row["title"]
