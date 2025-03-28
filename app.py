@@ -38,7 +38,7 @@ from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, No
 import plotly.graph_objects as go
 
 # -----------------------------------------------------------------------------
-# Set page configuration (only once at the top)
+# Set page configuration (only once)
 st.set_page_config(page_title="YouTube Video Analysis", page_icon="📊", layout="wide")
 # -----------------------------------------------------------------------------
 
@@ -162,7 +162,7 @@ def parse_iso8601_duration(duration_str):
     except Exception:
         return 0
 
-# --- Define chunk_list for splitting lists into chunks
+# --- Helper: chunk_list to split list into chunks
 def chunk_list(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i+n]
@@ -630,8 +630,10 @@ def search_youtube(query, channel_ids, timeframe, content_filter, ttl=600,
         try:
             pub_date = datetime.strptime(r["published_at"], "%Y-%m-%dT%H:%M:%SZ").date()
             video_age = (datetime.now().date() - pub_date).days
+            if video_age < 1:
+                video_age = 1
         except Exception:
-            video_age = 0
+            video_age = 1
         # Determine filter based on outlier_video_type parameter
         if outlier_video_type == "auto":
             is_short_filter = (r.get("content_category", "").lower() == "short")
@@ -894,18 +896,19 @@ def simulate_video_performance(video_data, benchmark_data):
     return pd.DataFrame(data)
 
 def compute_channel_benchmark(channel_id, video_age, is_short_filter, percentile_range, num_videos):
-    # Fetch channel videos for the specific channel
+    # Fetch channel videos for this channel
     channel_videos, channel_name, channel_stats = fetch_channel_videos_outlier(channel_id, num_videos, YOUTUBE_API_KEY)
     if not channel_videos:
         return None
     video_ids = [v['videoId'] for v in channel_videos]
     detailed_videos = fetch_video_details_outlier(video_ids, YOUTUBE_API_KEY)
-    # Generate simulated cumulative views for all videos in the channel (with a minimum age)
+    # Generate simulated cumulative views for these videos using the video's age
     benchmark_df = generate_historical_data(detailed_videos, video_age, is_short_filter)
     if benchmark_df.empty:
         return None
     benchmark_stats = calculate_benchmark(benchmark_df, percentile_range)
-    day_index = min(video_age, len(benchmark_stats) - 1)
+    # Use video_age - 1 as the index (simulation starts at day 0)
+    day_index = min(max(video_age - 1, 0), len(benchmark_stats) - 1)
     channel_average = benchmark_stats.loc[day_index, 'channel_average']
     return channel_average
 
@@ -924,7 +927,7 @@ def show_search_page():
     content_filter = st.sidebar.selectbox("Filter By Content Type", ["Shorts", "Videos", "Both"], index=2)
     keyword = st.sidebar.text_input("Keyword (optional)", "")
     
-    # Sidebar: Outlier Settings (for benchmark calculation)
+    # Sidebar: Outlier Settings for Benchmark Calculation
     st.sidebar.markdown("### Outlier Settings")
     include_all = st.sidebar.checkbox("Include all videos for benchmark", value=True)
     num_videos_for_benchmark = None if include_all else st.sidebar.slider("Number of videos for benchmark", 10, 200, 50, 10)
